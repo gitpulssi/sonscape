@@ -1,0 +1,1479 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SoniXcape Treatment System</title>
+  
+  <!-- Fullscreen web app meta tags -->
+  <meta name="theme-color" content="#1e1e1e">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Font Awesome for icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+  <style>
+    /* BASIC LAYOUT */
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f0f2f5}
+    .wrap{max-width:960px;margin:0 auto;padding:24px}
+    h1{color:#1a73e8;margin:0 0 16px}
+    h2{color:#1a73e8;margin:20px 0 10px}
+    select,input[type=number]{padding:6px 8px;border:1px solid #aaa;border-radius:4px}
+    table{table-layout:fixed;width:100%;border-collapse:collapse}
+    th,td{padding:4px;border:1px solid #ddd;text-align:center;overflow:hidden}
+    th{background:#1a73e8;color:#fff;font-weight:500}
+    tr:hover{background:#f6f9ff}
+    /* VIEW SWITCHING */
+    .view{display:none}
+    .view.active{display:block}
+    
+    /* NEW HOME VIEW STYLES - Mobile Optimized */
+    .home-container {
+      background-color: #1e1e1e;
+      color: #ccc;
+      display: flex;
+      justify-content: center;
+      padding: 10px;
+      margin: -24px;
+      min-height: 100vh;
+    }
+
+    .home-content {
+      background: #2c2c2c;
+      padding: 12px;
+      border-radius: 10px;
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .header {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 4px 0;
+    }
+
+    .header .status {
+      justify-self: start;
+    }
+
+    .header .dial {
+      justify-self: center;
+      font-size: 1em;
+      font-weight: bold;
+      color: #00ffcc;
+    }
+
+    .header .menu {
+      justify-self: end;
+    }
+
+    .status {
+      font-size: 1.1em;
+      font-weight: bold;
+    }
+    .status.connected { color: #00ff66; }
+    .status.playing { color: #ffc107; }
+    .status.ready { color: #00ffcc; }
+
+    .menu {
+      position: relative;
+      display: inline-block;
+    }
+    
+    .menu button {
+      background: none;
+      border: none;
+      color: #ccc;
+      font-size: 1.5em;
+      cursor: pointer;
+    }
+    .menu-content {
+      display: none;
+      position: absolute;
+      right: 0;
+      background-color: #3a3a3a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      z-index: 1;
+      min-width: 160px;
+    }
+    .menu-content a {
+      display: block;
+      padding: 12px;
+      text-decoration: none;
+      color: #ccc;
+      cursor: pointer;
+    }
+    .menu-content a:hover { background-color: #444; }
+    .menu:hover .menu-content { display: block; }
+
+    /* Session slider */
+    .session-slider {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .session-slider input[type=range] {
+      width: 80%;
+      margin: 0 auto;
+      background: #444;
+    }
+    .session-slider .dial {
+      margin-bottom: 0px;
+      font-size: 1em;
+      color: #00ffcc;
+    }
+    .session-slider label {
+      margin-top: 0px;
+      font-size: 0.95em;
+    }
+
+    .home-select {
+      background: #1e1e1e;
+      color: #ccc;
+      border: 1px solid #444;
+      padding: 12px;
+      border-radius: 5px;
+      width: 100%;
+      font-size: 1em;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: space-around;
+      width: 100%;
+    }
+    .controls button {
+      flex: 1;
+      margin: 0 5px;
+      background: #444;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 0;
+      color: #fff;
+      font-size: 1.3em;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    .controls button:hover {
+      background: #555;
+    }
+    .controls button.play-btn {
+      background: #00ff66;
+      color: #000;
+    }
+    
+    .controls button.pause-btn {
+      background: #ffc107;
+      color: #000;
+    }
+    
+    .controls button.stop-btn {
+      background: #ff4444;
+    }
+
+    .mix-slider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+    }
+    .mix-slider input[type=range] { 
+      flex: 1;
+      background: #444;
+    }
+    .mix-slider i {
+      color: #00ffcc;
+      font-size: 1.2em;
+    }
+
+    .sliders {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      gap: 15px;
+    }
+    .slider-group {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .slider-group input[type=range] {
+      writing-mode: vertical-lr;
+      direction: rtl;
+      appearance: none;
+      width: 30px;
+      height: 160px;
+      margin-bottom: 6px;
+      background: #444;
+    }
+    .slider-group label {
+      font-size: 0.9em;
+      text-align: center;
+      color: #ccc;
+    }
+
+    .bt-controls {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      padding: 8px;
+      background: #3a3a3a;
+      border-radius: 8px;
+    }
+    .bt-controls label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: #ccc;
+    }
+    .bt-controls input[type=checkbox] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    .bt-controls button {
+      background: #555;
+      color: #ccc;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .bt-controls button:hover {
+      background: #666;
+    }
+    
+    /* BUTTONS & STATES */
+    .actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+    .btn{flex:1;min-width:100px;padding:10px;border:none;border-radius:6px;color:#fff;background:#1a73e8;font-size:1rem;cursor:pointer;transition:all 0.3s}
+    .btn:hover{background:#1557b0;transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.2)}
+    .btn.grey{background:#6c757d}
+    .btn.grey:hover{background:#5a6268}
+    .btn.danger{background:#d93025}
+    .btn.danger:hover{background:#b91c1c}
+    .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+    .btn.large{padding:14px 24px;font-size:1.1rem}
+    
+    /* NAV BUTTONS */
+    .nav-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding:10px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+    .nav-btn{padding:8px 16px;background:#fff;color:#1a73e8;border:2px solid #1a73e8;border-radius:6px;cursor:pointer;font-weight:500}
+    .nav-btn:hover{background:#1a73e8;color:#fff}
+    
+    /* TABLE STATES */
+    .highlight-selected{background:#cce5ff!important}
+    .copy-flash,.paste-flash{background:#fff3cd!important}
+    .highlight-playing{background:#fffacd!important}
+    /* SLIDERS */
+    input[type=range].v{writing-mode:vertical-lr;direction:rtl;height:180px;width:80%}
+    /* STATUS INDICATOR */
+    .status-indicator{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;background:#fff;border-radius:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
+    .status-dot{width:10px;height:10px;border-radius:50%;background:#ccc;animation:pulse 2s infinite}
+    .status-dot.active{background:#4caf50}
+    .status-dot.playing{background:#ffc107}
+    @keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
+    /* MODAL STYLES */
+    .modal {display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background-color:rgba(0,0,0,0.5);align-items:center;justify-content:center;}
+    .modal-content {background-color:#fff;padding:20px;border-radius:8px;width:80%;max-width:600px;max-height:80%;overflow-y:auto;}
+    .modal-header {display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
+    .close {font-size:28px;font-weight:bold;cursor:pointer;color:#aaa;}
+    .close:hover {color:#000;}
+    .conflict-msg {background-color:#fff3cd;border:1px solid #ffeaa7;padding:10px;border-radius:4px;margin:10px 0;}
+    pre {background-color:#f8f9fa;border:1px solid #dee2e6;border-radius:4px;padding:10px;overflow-x:auto;font-size:12px;}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <!-- HOME/PLAYER VIEW -->
+  <div id="homeView" class="view active">
+    <div class="home-container">
+      <div class="home-content">
+        <!-- Header -->
+        <div class="header">
+          <div id="homeStatusText" class="status ready">Ready</div>
+          <div id="sessionDial" class="dial">30 min</div>
+          <div class="menu">
+            <button><i class="fas fa-bars"></i></button>
+            <div class="menu-content">
+              <a onclick="document.getElementById('uploadSingleFile').click()">Upload Treatment</a>
+              <a onclick="showView('managerView')">Treatment Manager</a>
+              <a onclick="forgetBT()">Forget BT</a>
+              <a onclick="toggleAPMode()">AP Mode</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session Slider -->
+        <div class="session-slider">
+          <input id="sessionRange" type="range" min="5" max="60" step="5" value="30"
+            oninput="document.getElementById('sessionDial').textContent = this.value + ' min'">
+          <label for="sessionRange">Session</label>
+        </div>
+
+        <!-- Treatment selector -->
+        <select id="homePresetSel" class="home-select">
+          <option>Select Treatment</option>
+        </select>
+
+        <!-- BT Controls -->
+        <div class="bt-controls">
+          <label>
+            <input id="btMonoChk" type="checkbox" checked />
+            <span>Bluetooth</span>
+          </label>
+          <button id="btStereoBtn" type="button">Stereo</button>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button id="homePlayPauseBtn" class="play-btn" title="Play"><i class="fas fa-play"></i></button>
+          <button id="homeStopBtn" class="stop-btn" title="Stop"><i class="fas fa-stop"></i></button>
+        </div>
+
+        <!-- Mix Slider -->
+        <div class="mix-slider">
+          <i class="fas fa-music"></i>
+          <input id="mixSlider" type="range" min="0" max="100" value="50">
+          <i class="fas fa-water"></i>
+        </div>
+
+        <div class="sliders">
+          <div class="slider-group">
+            <input id="strengthSlider" type="range" min="0" max="9" value="5">
+            <label>Strength</label>
+          </div>
+          <div class="slider-group">
+            <input id="legsSlider" type="range" min="0" max="9" value="5">
+            <label>Legs</label>
+          </div>
+          <div class="slider-group">
+            <input id="thighsSlider" type="range" min="0" max="9" value="5">
+            <label>Thighs</label>
+          </div>
+          <div class="slider-group">
+            <input id="backSlider" type="range" min="0" max="9" value="5">
+            <label>Back</label>
+          </div>
+          <div class="slider-group">
+            <input id="neckSlider" type="range" min="0" max="9" value="5">
+            <label>Neck</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TREATMENT MANAGER VIEW -->
+  <div id="managerView" class="view">
+    <div class="nav-bar">
+      <button class="nav-btn" onclick="showView('homeView')">? Back to Home</button>
+      <h2 style="margin:0">Treatment Manager</h2>
+      <div style="width:120px"></div>
+    </div>
+
+    <label>Preset&nbsp;
+      <input id="presetSearch" type="text" placeholder="Search…" style="padding:6px 8px;margin-right:8px;width:50%">
+      <select id="presetSel"></select>
+    </label>
+
+    <table id="mat">
+      <thead><tr>
+        <th>#</th><th>Time s</th><th>Strength</th><th>Freq Hz</th><th>F-Sweep</th><th>S-Speed</th>
+        <th>Neck</th><th>Back</th><th>Thighs</th><th>Legs</th>
+        <th>Mod Speed</th><th>Phase</th><th>Mode</th><th>Copy/Paste</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <div id="sliderPanel" style="display:none;margin-top:20px">
+      <h3>Edit Row&nbsp;<span id="selectedRowNum"></span></h3>
+      <div style="display:grid;grid-template-columns:repeat(14,1fr);gap:2px;overflow-x:auto"></div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="toggleSlidersBtn">Toggle Sliders</button>
+      <button class="btn grey" onclick="newPreset()">New</button>
+      <button class="btn" onclick="duplicatePreset()">Duplicate</button>
+      <button class="btn" onclick="savePreset()">Save</button>
+      <button class="btn" onclick="saveAsPreset()">Save As</button>
+      <button class="btn" onclick="downloadCurrentPreset()">Download</button>
+      <input id="uploadSingleFile" type="file" style="display:none" onchange="uploadSinglePreset(event)">
+      <button class="btn" onclick="qs('#uploadSingleFile').click()">Upload</button>
+      <button class="btn" onclick="backupPresets()">Backup All</button>
+      <input id="uploadFile" type="file" style="display:none" onchange="restorePresets(event)">
+      <button class="btn" onclick="qs('#uploadFile').click()">Restore All</button>
+      <button class="btn danger" onclick="delPreset()">Delete</button>
+      <button class="btn" id="playSelectedBtn">Play Selected</button>
+      <button class="btn" id="playAllBtn">Play All</button>
+      <button class="btn grey" onclick="stopPreset()">Stop</button>
+    </div>
+  </div>
+  <div id="toast" style="visibility:hidden;min-width:200px;background:#333;color:#fff;text-align:center;border-radius:4px;padding:12px;position:fixed;z-index:1;left:50%;bottom:30px;transform:translateX(-50%);font-size:17px"></div>
+</div>
+
+<script>
+
+const fields = ['time','strength','frequency','freqSweep','sweepSpeed','neck','back','thighs','legs','modSpeed','phase','mode'];
+
+const sliderMinMax = {
+  time:{min:0,max:300}, strength:{min:0,max:9}, frequency:{min:1,max:200},
+  freqSweep:{min:0,max:20}, sweepSpeed:{min:0,max:9},
+  neck:{min:0,max:9}, back:{min:0,max:9}, thighs:{min:0,max:9}, legs:{min:0,max:9},
+  modSpeed:{min:1,max:100,step:1}, phase:{min:0,max:90},
+  mode:{min:0,max:10}
+};
+const DEFAULT_ROW = {time:60,strength:5,frequency:100,freqSweep:5,sweepSpeed:1,neck:5,back:5,thighs:5,legs:5,modSpeed:1,phase:90,mode:0};
+const ROWS = 6;
+
+let presets=[],curIdx=-1,selectedRow=-1,rowBuffer=null,ws=null,previewPreset=null,currentPlayingRow=-1,isPlaying=false;
+const qs=q=>document.querySelector(q),qsAll = q => [...document.querySelectorAll(q)];
+const ajax=(u,m,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b});
+let sliderListenersAttached = false;
+let isPaused = false;
+let lastSelectedTreatment = -1;
+let currentTreatmentState = null; // Will store resume state
+
+function forgetBT() {
+  if (confirm('Forget all Bluetooth devices?')) {
+    send({action: 'bt-forget-all'});
+    showToast('Bluetooth devices forgotten');
+  }
+}
+
+function toggleAPMode() {
+  send({action: 'toggle-ap-mode'});
+  showToast('AP Mode toggled');
+}
+
+function connectWS(){
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.hostname}:8081`);
+
+  const mixSlider = document.getElementById('mixSlider');
+  const saved = localStorage.getItem('mix') || "50";
+  if (mixSlider) mixSlider.value = saved;
+
+  function sendMix(v){
+    const payload = JSON.stringify({ action: "set-mix", value: v });
+    if (ws && ws.readyState === 1) { ws.send(payload); localStorage.removeItem('mixPending'); }
+    else { localStorage.setItem('mixPending', v); }
+  }
+
+  if (!sliderListenersAttached && mixSlider) {
+    let lastSent = -1;
+    mixSlider.addEventListener('input', e => {
+      const v = parseInt(e.target.value, 10);
+      if (Math.abs(v - lastSent) >= 2) { sendMix(v); lastSent = v; }
+    });
+    mixSlider.addEventListener('change', e => {
+      const v = parseInt(e.target.value, 10);
+      localStorage.setItem('mix', v); sendMix(v); lastSent = v;
+    });
+    sliderListenersAttached = true;
+  }
+
+  const btMonoChk = document.getElementById('btMonoChk');
+  const btStereoBtn = document.getElementById('btStereoBtn');
+  if (btMonoChk) {
+    btMonoChk.addEventListener('change', () => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ action: 'bt-set-mono', mono: btMonoChk.checked }));
+      }
+    });
+  }
+  if (btStereoBtn) {
+    btStereoBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ action: 'bt-set-mono', mono: false }));
+      }
+      if (btMonoChk) btMonoChk.checked = false;
+    });
+  }
+
+  ws.addEventListener('open', () => {
+    console.log('[WS] connected');
+    if (ws.readyState === 1) ws.send(JSON.stringify({action:'ready'}));
+    const pending = localStorage.getItem('mixPending') ?? localStorage.getItem('mix');
+    if (pending != null) sendMix(parseInt(pending, 10));
+    updateStatus('Connected','active');
+  });
+
+  ws.addEventListener('close', () => {
+    updateStatus('Disconnected','error');
+    setTimeout(connectWS, 3000);
+  });
+
+  ws.addEventListener('error', e => console.error('[WS] error', e));
+
+  ws.addEventListener('message', enhancedWebSocketHandler);
+}
+
+// Local storage backend
+const LS_KEY = 'sx_presets_v1';
+function lsRead(){ try{const x=JSON.parse(localStorage.getItem(LS_KEY)); return Array.isArray(x)?x:[];}catch{return[];} }
+function lsWrite(arr){ try{localStorage.setItem(LS_KEY, JSON.stringify(arr));}catch{} }
+function normalize(arr){
+  if(!Array.isArray(arr) || arr.length===0){
+    return [{ id:'preset-default', name:'Default', rows:Array.from({length:ROWS},()=>({...DEFAULT_ROW})) }];
+  }
+  arr.forEach((p,i)=>{
+    if(!p.name || !p.name.trim()) p.name = `Treatment ${i+1}`;
+    if(!Array.isArray(p.rows) || p.rows.length===0)
+      p.rows = Array.from({length:ROWS},()=>({...DEFAULT_ROW}));
+  });
+  return arr;
+}
+function upsert(p){ const arr = lsRead(); const i = arr.findIndex(x=>x.id===p.id); if(i>=0) arr[i]=p; else arr.push(p); lsWrite(arr); }
+
+window.originalFetch = window.fetch;
+window.fetch = function(url, options = {}){
+  if(url === '/list-presets'){
+    return Promise.resolve({ ok:true, json:()=>Promise.resolve(normalize(lsRead())) });
+  }
+  if(url === '/save-preset'){
+    const body = options.body ? JSON.parse(options.body) : {};
+    upsert(body);
+    return Promise.resolve({ ok:true, json:()=>Promise.resolve({status:'ok', id:body.id}) });
+  }
+  if(url === '/delete-preset'){
+    const body = options.body ? JSON.parse(options.body) : {};
+    const next = lsRead().filter(p=>p.id!==body.id);
+    lsWrite(next);
+    return Promise.resolve({ ok:true, json:()=>Promise.resolve({status:'ok'}) });
+  }
+  return originalFetch(url, options);
+};
+
+function send(obj){
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  else console.warn('WS not ready, ignoring:', obj.action);
+}
+
+function showView(viewId) {
+  qsAll('.view').forEach(v => v.classList.remove('active'));
+  qs('#' + viewId).classList.add('active');
+  if (viewId === 'homeView') {
+    updateHomePresetList();
+  } else if (viewId === 'managerView') {
+    ensureManagerViewPopulated();
+  }
+}
+
+function ensureManagerViewPopulated() {
+  if (presets.length > 0) {
+    const tableBody = qs('#mat tbody');
+    if (!tableBody || !tableBody.innerHTML.trim()) {
+      console.log('Manager view matrix empty, rebuilding...');
+      if (curIdx < 0) {
+        curIdx = 0;
+        const presetSel = qs('#presetSel');
+        if (presetSel) presetSel.value = 0;
+      }
+      if (curIdx >= 0 && curIdx < presets.length) {
+        buildTable(presets[curIdx].rows || []);
+        const firstRow = qs('#mat tbody tr[data-index="0"]');
+        if (firstRow) selectRow(0, firstRow);
+      }
+    }
+  }
+}
+
+function updateStatus(text, state = 'ready') {
+  const homeStatus = qs('#homeStatusText');
+  if (homeStatus) {
+    homeStatus.textContent = text;
+    homeStatus.className = 'status ' + state;
+  }
+}
+
+document.addEventListener('input',e=>{
+  if(e.target.type==="number"){
+    const i=e.target,v=parseFloat(i.value);
+    i.value=isNaN(v)?i.min:Math.min(+i.max,Math.max(+i.min,v));
+  }
+});
+
+function rowHTML(i,r){
+  r={...DEFAULT_ROW,...r};
+  return `<tr data-index="${i}" onclick="selectRow(${i},this)">
+    <td style="cursor:pointer">${i+1}</td>
+    ${fields.map(k=>`<td><input type="number" data-k="${k}" min="${sliderMinMax[k].min}" max="${sliderMinMax[k].max}" value="${r[k]}" style="width:90%;padding:2px"></td>`).join('')}
+    <td><button onclick="event.stopPropagation();copyRow(${i})">Copy</button>
+        <button onclick="event.stopPropagation();pasteRow(${i})">Paste</button></td>
+  </tr>`;
+}
+
+function buildTable(rows){
+  while (rows.length < ROWS) rows.push({ ...DEFAULT_ROW });
+  // Render using the existing rowHTML which maps each field correctly
+  qs('#mat tbody').innerHTML = rows.map((r, i) => rowHTML(i, r)).join('');
+}
+
+function selectRow(i,tr){
+  qsAll('#mat tbody tr').forEach(r=>r.classList.remove('highlight-selected'));
+  tr.classList.add('highlight-selected'); selectedRow=i;
+  if(qs('#sliderPanel').style.display!=="none")showRowEditor(i);
+}
+
+function showRowEditor(idx){
+  const panel=qs('#sliderPanel'),grid=panel.querySelector('div');
+  panel.style.display='block'; grid.innerHTML=''; qs('#selectedRowNum').textContent=idx+1;
+  const row=gatherRows()[idx];
+  grid.appendChild(Object.assign(document.createElement('div'),{style:'width:100%'}));
+  fields.forEach(k=>{
+    const w=document.createElement('div');
+    w.style.cssText='display:flex;flex-direction:column;align-items:center;padding:4px';
+    w.innerHTML=`<label style="font-size:.7rem">${k}</label>
+      <input type="range" class="v" data-k="${k}" min="${sliderMinMax[k].min}" max="${sliderMinMax[k].max}" value="${row[k]}">
+      <div id="val-${k}" style="font-size:.8rem">${row[k]}</div>`;
+    grid.appendChild(w);
+  });
+  grid.appendChild(Object.assign(document.createElement('div'),{style:'width:100%'}));
+  grid.querySelectorAll('input[type=range]').forEach(sl=>{
+    sl.oninput=()=>{
+      const k=sl.dataset.k,v=+sl.value;
+      qs('#val-'+k).textContent=v;
+      const inp=qs(`#mat tbody tr[data-index="${idx}"] input[data-k="${k}"]`);
+      if(inp){inp.value=v;inp.dispatchEvent(new Event('change'));}}
+  });
+}
+
+function copyRow(i){
+  rowBuffer={...gatherRows()[i]};
+  const tr=qs(`#mat tbody tr[data-index="${i}"]`); tr.classList.add('copy-flash');
+  setTimeout(()=>tr.classList.remove('copy-flash'),800);
+}
+function pasteRow(i){
+  if(!rowBuffer)return;
+  const tr=qs(`#mat tbody tr[data-index="${i}"]`);
+  tr.querySelectorAll('input').forEach(inp=>{
+    const k=inp.dataset.k;if(rowBuffer[k]!=null){inp.value=rowBuffer[k];inp.dispatchEvent(new Event('change'));}});
+  tr.classList.add('paste-flash'); setTimeout(()=>tr.classList.remove('paste-flash'),800);
+}
+
+function gatherRows() {
+  return qsAll('#mat tbody tr').map(tr => {
+    const o = {};
+    tr.querySelectorAll('input').forEach(inp => o[inp.dataset.k] = +inp.value);
+    return o;
+  });
+}
+
+function showToast(msg){const t=qs('#toast');t.textContent=msg;t.style.visibility='visible';setTimeout(()=>t.style.visibility='hidden',1800);}
+
+function updateHomePresetList() {
+  const homeSel = qs('#homePresetSel');
+  if (homeSel) {
+    homeSel.innerHTML = '<option>Select Treatment</option>' + presets.map((p,i)=>`<option value="${i}">${p.name}</option>`).join('');
+    if (curIdx >= 0) homeSel.value = curIdx;
+  }
+}
+
+async function saveAsPreset() {
+  if (curIdx < 0) { 
+    showToast('No preset selected'); 
+    return; 
+  }
+  
+  const currentPreset = presets[curIdx];
+  const newName = prompt('Enter new preset name:', currentPreset.name + ' Copy');
+  
+  if (!newName || !newName.trim()) {
+    return; // User cancelled or entered empty name
+  }
+  
+  // Check if name already exists
+  const existingPreset = presets.find(p => p.name.toLowerCase() === newName.trim().toLowerCase());
+  if (existingPreset) {
+    if (!confirm(`A preset named "${newName.trim()}" already exists. Overwrite it?`)) {
+      return;
+    }
+  }
+  
+  // Create new preset with current table data
+  const newPreset = {
+    id: existingPreset ? existingPreset.id : 'preset-' + Date.now(),
+    name: newName.trim(),
+    description: currentPreset.description || '',
+    category: currentPreset.category || '',
+    rows: gatherRows() // Get current table data from the matrix
+  };
+  
+  try {
+    // Save the preset
+    await ajax('/save-preset', 'POST', JSON.stringify(newPreset));
+    
+    // Reload the preset list to include the new one
+    await loadList(newPreset.id);
+    
+    // Switch to the new preset in the dropdown
+    const newIndex = presets.findIndex(p => p.id === newPreset.id);
+    if (newIndex >= 0) {
+      const presetSel = qs('#presetSel');
+      if (presetSel) {
+        presetSel.value = newIndex;
+        selectPreset(newIndex);
+      }
+      curIdx = newIndex;
+    }
+    
+    // Update home view preset list too
+    updateHomePresetList();
+    
+    showToast(`Preset saved as "${newPreset.name}"`);
+  } catch (error) {
+    console.error('Error saving preset:', error);
+    showToast('Error saving preset');
+  }
+}
+
+async function loadList(preferredId = null){
+  const arr = await (await fetch('/list-presets')).json();
+  presets = arr;
+
+  if (presets.length === 0) {
+    presets = [{
+      id: 'preset-default',
+      name: 'Default',
+      rows: Array.from({ length: ROWS }, () =>
+        structuredClone ? structuredClone(DEFAULT_ROW) : JSON.parse(JSON.stringify(DEFAULT_ROW))
+      )
+    }];
+  }
+
+  const sel = qs('#presetSel');
+  if (sel) {
+    sel.innerHTML = presets.map((p,i)=>
+      `<option value="${i}" data-id="${p.id}">${p.name}</option>`
+    ).join('');
+    sel.onchange = () => selectPreset(+sel.value);
+    sel.value = 0;
+  }
+  selectPreset(0);
+  updateHomePresetList();
+}
+
+function selectPreset(idx) {
+  curIdx = idx;
+  if (idx >= 0 && idx < presets.length) {
+    buildTable(presets[idx].rows || []);
+    const firstRow = qs('#mat tbody tr[data-index="0"]');
+    if (firstRow) selectRow(0, firstRow);
+  }
+}
+
+function playSelected(i){
+  const userVals = getUserStrengthValues();
+  send({
+    action:'play-selected',
+    treatmentIndex:curIdx,
+    rowIndex:i,
+    row:{...gatherRows()[i], ...userVals}
+  });
+  isPlaying = true;
+  updateStatus('Playing Selected Row', 'playing');
+}
+
+function playAll(){
+  const userVals = getUserStrengthValues();
+  let rows = gatherRows();
+
+  if (qs('#homeView').classList.contains('active')) {
+    // Home page ? scale to session length
+    rows = normalizeRowTimes(rows);
+    rows = scaleRowsBySession(rows).map(r => ({...r, ...userVals}));
+  } else {
+    // Manager view ? therapist minutes, convert to seconds
+    rows = rows.map(r => ({...r, ...userVals, time: r.time * 60}));
+  }
+
+  send({action:'play-all', treatmentIndex:curIdx, rows});
+  isPlaying = true;
+  updateStatus('Playing Treatment', 'playing');
+}
+
+function stopPreset(){
+  send({action:'stop'});
+  clearPlayingHighlight();
+  isPlaying = false;
+  updateStatus('Ready');
+}
+
+function highlightRowUI(i){
+  clearPlayingHighlight();
+  currentPlayingRow = i;
+  const row = qs(`#mat tbody tr[data-index="${i}"]`);
+  if(row){
+    row.classList.add('highlight-playing');
+    row.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+}
+function clearPlayingHighlight(){
+  qsAll('#mat tbody tr').forEach(r=>r.classList.remove('highlight-playing'));
+  currentPlayingRow = -1;
+}
+
+async function newPreset(){
+  const name = prompt('Preset name?', 'New');
+  if (!name) return;
+  const blank = {
+    id: 'preset-' + Date.now(),
+    name: name.trim(),
+    description: '',
+    category: '',
+    rows: Array.from({length: ROWS}, () => structuredClone ? structuredClone(DEFAULT_ROW) : JSON.parse(JSON.stringify(DEFAULT_ROW)))
+  };
+  await ajax('/save-preset', 'POST', JSON.stringify(blank));
+  await loadList(blank.id);
+  showToast('New preset created!');
+}
+
+async function savePreset() {
+  if (curIdx < 0) { showToast('No preset selected'); return; }
+  presets[curIdx].rows = gatherRows();
+  await ajax('/save-preset', 'POST', JSON.stringify(presets[curIdx]));
+  showToast('Saved');
+}
+
+function downloadCurrentPreset(){
+  if(curIdx<0){showToast('No treatment selected.');return;}
+  const p=presets[curIdx],blob=new Blob([JSON.stringify(p,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=p.name.replace(/\s+/g,'_')+'.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+}
+
+// Replace the existing uploadSinglePreset function with this one:
+
+function uploadSinglePreset(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = async (evt) => {
+    try {
+      const uploadedPreset = JSON.parse(evt.target.result);
+      
+      // Validate the uploaded file
+      if (!uploadedPreset.name) {
+        showToast('Invalid treatment file: missing name');
+        return;
+      }
+      
+      if (!uploadedPreset.rows || !Array.isArray(uploadedPreset.rows)) {
+        showToast('Invalid treatment file: missing or invalid rows');
+        return;
+      }
+      
+      // Ensure the preset has proper structure
+      if (!uploadedPreset.id) {
+        uploadedPreset.id = 'preset-' + Date.now();
+      }
+      
+      // Pad rows to ensure we have exactly ROWS entries
+      while (uploadedPreset.rows.length < ROWS) {
+        uploadedPreset.rows.push({...DEFAULT_ROW});
+      }
+      
+      // Trim if too many rows
+      if (uploadedPreset.rows.length > ROWS) {
+        uploadedPreset.rows = uploadedPreset.rows.slice(0, ROWS);
+      }
+      
+      // Validate and fix each row
+      uploadedPreset.rows = uploadedPreset.rows.map(row => ({
+        ...DEFAULT_ROW,
+        ...row
+      }));
+      
+      // Check if name already exists
+      const existingIndex = presets.findIndex(p => 
+        p.name.toLowerCase() === uploadedPreset.name.toLowerCase()
+      );
+      
+      if (existingIndex >= 0) {
+        const overwrite = confirm(
+          `A treatment named "${uploadedPreset.name}" already exists. Overwrite it?`
+        );
+        
+        if (overwrite) {
+          // Keep the existing ID but update everything else
+          uploadedPreset.id = presets[existingIndex].id;
+        } else {
+          // Create with new name
+          const newName = prompt('Enter a new name for this treatment:', uploadedPreset.name + ' Copy');
+          if (!newName || !newName.trim()) {
+            showToast('Upload cancelled');
+            return;
+          }
+          uploadedPreset.name = newName.trim();
+          uploadedPreset.id = 'preset-' + Date.now();
+        }
+      }
+      
+      try {
+        // Save the preset
+        await ajax('/save-preset', 'POST', JSON.stringify(uploadedPreset));
+        
+        // Reload the preset list
+        await loadList(uploadedPreset.id);
+        
+        // Switch to the uploaded preset
+        const newIndex = presets.findIndex(p => p.id === uploadedPreset.id);
+        if (newIndex >= 0) {
+          const presetSel = qs('#presetSel');
+          if (presetSel) {
+            presetSel.value = newIndex;
+            selectPreset(newIndex);
+          }
+          curIdx = newIndex;
+        }
+        
+        // Update home view as well
+        updateHomePresetList();
+        
+        showToast(`Treatment "${uploadedPreset.name}" uploaded successfully`);
+        
+      } catch (error) {
+        console.error('Error saving uploaded preset:', error);
+        showToast('Error saving uploaded treatment');
+      }
+      
+    } catch (error) {
+      console.error('Error parsing uploaded file:', error);
+      showToast('Invalid JSON file or corrupted treatment data');
+    }
+  };
+  
+  reader.readAsText(file);
+  e.target.value = ''; // Clear the file input for next upload
+}
+
+window.addEventListener('load', () => {
+  const homePlayPauseBtn = qs('#homePlayPauseBtn');  // Single toggle button
+  const homeStopBtn = qs('#homeStopBtn');
+  const toggleSlidersBtn = qs('#toggleSlidersBtn');
+  const playSelectedBtn = qs('#playSelectedBtn');
+  const playAllBtn = qs('#playAllBtn');
+
+  const userSliders = {
+    strengthSlider: "user_strength",
+    neckSlider: "user_neck",
+    backSlider: "user_back",
+    thighsSlider: "user_thighs",
+    legsSlider: "user_legs"
+  };
+
+  for (const [sliderId, controlName] of Object.entries(userSliders)) {
+    const el = document.getElementById(sliderId);
+    if (!el) continue;
+    let lastSent = -1;
+    el.addEventListener("input", e => {
+      const v = parseInt(e.target.value, 10);
+      // only send if value actually changes significantly
+      if (v !== lastSent) {
+        sendUserControlUpdate(controlName, v);
+        lastSent = v;
+      }
+    });
+    el.addEventListener("change", e => {
+      const v = parseInt(e.target.value, 10);
+      sendUserControlUpdate(controlName, v);
+      lastSent = v;
+    });
+  }
+
+  // Set up play/pause toggle button
+  if (homePlayPauseBtn) {
+    homePlayPauseBtn.onclick = togglePlayPause;
+  }
+  
+  // Set up stop button
+  if (homeStopBtn) {
+    homeStopBtn.onclick = stopTreatment;
+  }
+
+  // Set up treatment selection change handler
+  handleTreatmentSelectionChange();
+
+  if (toggleSlidersBtn) {
+    toggleSlidersBtn.onclick = () => {
+      const panel = qs('#sliderPanel');
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        if (selectedRow >= 0) showRowEditor(selectedRow);
+      } else {
+        panel.style.display = 'none';
+      }
+    };
+  }
+
+  if (playSelectedBtn) {
+    playSelectedBtn.onclick = () => {
+      if (selectedRow >= 0) { playSelected(selectedRow); }
+      else { showToast('No row selected'); }
+    };
+  }
+
+  if (playAllBtn) {
+    playAllBtn.onclick = () => { playAll(); };
+  }
+
+  connectWS();
+  loadList();
+});
+
+// Replace the stub functions at the bottom of the script with these implementations:
+
+async function duplicatePreset() {
+  if (curIdx < 0) { 
+    showToast('No preset selected'); 
+    return; 
+  }
+  
+  const currentPreset = presets[curIdx];
+  const newName = prompt('Enter name for duplicated preset:', currentPreset.name + ' Copy');
+  
+  if (!newName || !newName.trim()) {
+    return;
+  }
+  
+  // Create duplicate with new ID and name
+  const duplicate = {
+    id: 'preset-' + Date.now(),
+    name: newName.trim(),
+    description: currentPreset.description || '',
+    category: currentPreset.category || '',
+    rows: currentPreset.rows.map(row => ({...row})) // Deep copy rows
+  };
+  
+  try {
+    await ajax('/save-preset', 'POST', JSON.stringify(duplicate));
+    await loadList(duplicate.id);
+    
+    // Switch to the duplicated preset
+    const newIndex = presets.findIndex(p => p.id === duplicate.id);
+    if (newIndex >= 0) {
+      const presetSel = qs('#presetSel');
+      if (presetSel) {
+        presetSel.value = newIndex;
+        selectPreset(newIndex);
+      }
+    }
+    
+    showToast(`Preset duplicated as "${duplicate.name}"`);
+  } catch (error) {
+    console.error('Error duplicating preset:', error);
+    showToast('Error duplicating preset');
+  }
+}
+
+async function delPreset() {
+  if (curIdx < 0) { 
+    showToast('No preset selected'); 
+    return; 
+  }
+  
+  const currentPreset = presets[curIdx];
+  
+  // Prevent deletion of the last preset
+  if (presets.length <= 1) {
+    showToast('Cannot delete the last preset');
+    return;
+  }
+  
+  if (!confirm(`Delete preset "${currentPreset.name}"? This cannot be undone.`)) {
+    return;
+  }
+  
+  try {
+    await ajax('/delete-preset', 'POST', JSON.stringify({id: currentPreset.id}));
+    await loadList();
+    
+    // Select the first available preset
+    if (presets.length > 0) {
+      const presetSel = qs('#presetSel');
+      if (presetSel) {
+        presetSel.value = 0;
+        selectPreset(0);
+      }
+    }
+    
+    showToast(`Preset "${currentPreset.name}" deleted`);
+  } catch (error) {
+    console.error('Error deleting preset:', error);
+    showToast('Error deleting preset');
+  }
+}
+
+function backupPresets() {
+  try {
+    const allPresets = presets;
+    const backup = {
+      version: '1.0',
+      timestamp: new Date().toISOString(),
+      presets: allPresets
+    };
+    
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    
+    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    a.href = url;
+    a.download = `sonixscape_backup_${timestamp}.json`;
+    
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    
+    showToast(`Backup saved with ${allPresets.length} presets`);
+  } catch (error) {
+    console.error('Error creating backup:', error);
+    showToast('Error creating backup');
+  }
+}
+
+function restorePresets(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  const reader = new FileReader();
+  reader.onload = async (evt) => {
+    try {
+      const backupData = JSON.parse(evt.target.result);
+      
+      // Validate backup format
+      if (!backupData.presets || !Array.isArray(backupData.presets)) {
+        showToast('Invalid backup file format');
+        return;
+      }
+      
+      const presetsToRestore = backupData.presets;
+      
+      if (presetsToRestore.length === 0) {
+        showToast('No presets found in backup file');
+        return;
+      }
+      
+      // Ask user for confirmation
+      const confirmMsg = `This will restore ${presetsToRestore.length} presets. ` +
+                        `This will overwrite any existing presets with matching names. Continue?`;
+      
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+      
+      // Save all presets from backup
+      let successCount = 0;
+      for (const preset of presetsToRestore) {
+        try {
+          // Ensure preset has required fields
+          if (!preset.id) preset.id = 'preset-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+          if (!preset.name) preset.name = 'Restored Preset';
+          if (!preset.rows) preset.rows = Array.from({length: ROWS}, () => ({...DEFAULT_ROW}));
+          
+          await ajax('/save-preset', 'POST', JSON.stringify(preset));
+          successCount++;
+        } catch (error) {
+          console.error(`Error restoring preset ${preset.name}:`, error);
+        }
+      }
+      
+      // Reload the preset list
+      await loadList();
+      
+      showToast(`Restored ${successCount} of ${presetsToRestore.length} presets`);
+      
+    } catch (error) {
+      console.error('Error parsing backup file:', error);
+      showToast('Error reading backup file');
+    }
+  };
+  
+  reader.readAsText(file);
+  event.target.value = ''; // Clear the file input
+}
+
+// Add this function to handle play/pause toggle:
+function togglePlayPause() {
+  const playPauseBtn = qs('#homePlayPauseBtn');
+  const selectedIdx = +qs('#homePresetSel').value;
+
+  console.log(`[TOGGLE] isPlaying=${isPlaying}, isPaused=${isPaused}, selectedIdx=${selectedIdx}, lastSelectedTreatment=${lastSelectedTreatment}, hasSnapshot=${!!(currentTreatmentState && currentTreatmentState.row_data)}`);
+
+  if (!playPauseBtn) return;
+
+  // If currently playing ? pause
+  if (isPlaying) {
+    console.log('[TOGGLE] Sending pause request');
+    send({ action: 'pause' });
+    isPaused = true;
+    isPlaying = false;
+
+    playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+    playPauseBtn.title = 'Resume';
+    playPauseBtn.classList.remove('play-btn');
+    playPauseBtn.classList.add('pause-btn');
+
+    updateStatus('Paused', 'ready');
+    showToast('Treatment paused');
+    return;
+  }
+
+  // Not playing ? start or resume
+  if (selectedIdx < 0 || !presets[selectedIdx]) {
+    showToast('No treatment selected');
+    return;
+  }
+
+  const selectedTreatment = presets[selectedIdx];
+  const shouldResume = isPaused && lastSelectedTreatment === selectedIdx;
+
+  console.log(`[TOGGLE] shouldResume=${shouldResume}`);
+
+  if (shouldResume) {
+    const payload = {
+      action: 'resume',
+      treatmentIndex: selectedIdx,
+      rows: selectedTreatment.rows
+    };
+    // Only send resumeState if it's a complete snapshot
+    if (currentTreatmentState && currentTreatmentState.row_data) {
+      payload.resumeState = currentTreatmentState;
+    }
+    send(payload);
+    showToast(`Resuming: ${selectedTreatment.name}`);
+  } else {
+    // Fresh start
+    let rowsToPlay;
+    if (qs('#homeView').classList.contains('active')) {
+      // Home view ? scale by Session slider
+      rowsToPlay = scaleRowsBySession(normalizeRowTimes(selectedTreatment.rows));
+    } else {
+      // Manager view ? use minutes directly, convert to seconds
+      rowsToPlay = selectedTreatment.rows.map(r => ({ ...r, time: (r.time || 0) * 60 }));
+    }
+
+    // If you want to merge in live user strength values too:
+    const userVals = getUserStrengthValues();
+    rowsToPlay = rowsToPlay.map(r => ({ ...r, ...userVals }));
+
+    send({ action: 'play-all', treatmentIndex: selectedIdx, rows: rowsToPlay });
+    currentTreatmentState = null;
+    showToast(`Playing: ${selectedTreatment.name}`);
+  }
+
+  // Update UI state
+  isPlaying = true;
+  isPaused = false;
+  lastSelectedTreatment = selectedIdx;
+
+  playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+  playPauseBtn.title = 'Pause';
+  playPauseBtn.classList.remove('pause-btn');
+  playPauseBtn.classList.add('play-btn');
+
+  updateStatus(`Playing: ${selectedTreatment.name}`, 'playing');
+}
+
+function stopTreatment() {
+  send({action: 'stop'});
+  
+  // Reset all state
+  isPlaying = false;
+  isPaused = false;
+  currentTreatmentState = null;
+  clearPlayingHighlight();
+  
+  // Reset button to play state
+  const playPauseBtn = qs('#homePlayPauseBtn');
+  if (playPauseBtn) {
+    playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+    playPauseBtn.title = 'Play';
+    playPauseBtn.classList.remove('pause-btn');
+    playPauseBtn.classList.add('play-btn');
+  }
+  
+  updateStatus('Ready');
+  showToast('Treatment stopped');
+}
+
+// Update the WebSocket message handler to handle pause/resume states:
+// Replace the existing WebSocket message handler with this enhanced version:
+
+function enhancedWebSocketHandler(ev) {
+  const msg = String(ev.data || '');
+
+  // NEW: reflect play started from Manager ("Play All" / "Play Selected")
+  if (msg === 'ack:play-all' || msg === 'ack:play-selected') {
+    isPaused = false;
+    isPlaying = true;
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+      playPauseBtn.title = 'Pause';
+      playPauseBtn.classList.remove('pause-btn'); // yellow
+      playPauseBtn.classList.add('play-btn');     // green
+    }
+
+    updateStatus('Playing', 'playing');
+    return;
+  }
+
+  // ? PAUSE (remove the stale-guard)
+  if (msg === 'ack:pause' || msg === 'pause:complete') {
+    isPaused = true;
+    isPlaying = false;
+
+    const selectedIdx = +qs('#homePresetSel').value;
+    lastSelectedTreatment = selectedIdx;
+    currentTreatmentState = { canResume: true };
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+      playPauseBtn.title = 'Resume';
+      playPauseBtn.classList.remove('play-btn'); // green
+      playPauseBtn.classList.add('pause-btn');   // yellow
+    }
+
+    updateStatus('Paused');
+    return;
+  }
+  
+  if (msg === 'ack:stop' || msg === 'stop:complete') {
+    clearPlayingHighlight();
+    isPlaying = false;
+    isPaused = false;
+    currentTreatmentState = null;
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+      playPauseBtn.title = 'Play';
+      playPauseBtn.classList.remove('pause-btn');
+      playPauseBtn.classList.add('play-btn');
+    }
+    updateStatus('Ready');
+    return;
+  }
+
+  if (msg === 'ack:pause' || msg === 'pause:complete') {
+    // Ignore stale pause if we already resumed
+    if (isPlaying === true) return;
+
+    isPaused = true;
+    isPlaying = false;
+
+    const selectedIdx = +qs('#homePresetSel').value;
+    lastSelectedTreatment = selectedIdx;
+    currentTreatmentState = { canResume: true };
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+      playPauseBtn.title = 'Resume';
+      playPauseBtn.classList.remove('play-btn');
+      playPauseBtn.classList.add('pause-btn');
+    }
+
+    updateStatus('Paused');
+    return;
+  }
+
+  // FIXED: when resuming, flip the icon back to green Pause
+  if (msg === 'ack:resume' || msg === 'resume:complete') {
+    isPaused = false;
+    isPlaying = true;
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+      playPauseBtn.title = 'Pause';
+      playPauseBtn.classList.remove('pause-btn'); // yellow
+      playPauseBtn.classList.add('play-btn');     // green
+    }
+
+    updateStatus('Playing', 'playing');
+    return;
+  }
+
+  console.log('[WS] message:', msg);
+}
+
+function normalizeRowTimes(rows) {
+  const total = rows.reduce((sum, r) => sum + (r.time || 0), 0) || 1;
+  return rows.map(r => ({ ...r, timePercent: r.time / total }));
+}
+
+function scaleRowsBySession(rows) {
+  const sessionMins = parseInt(document.getElementById('sessionRange').value, 10);
+  const sessionSecs = sessionMins * 60;
+  return rows.map(r => ({ ...r, time: Math.round(sessionSecs * (r.timePercent || 0)) }));
+}
+
+function sendUserControlUpdate(key, value) {
+  const payload = { action: "set-user-control", control: key, value: value };
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(payload));
+  } else {
+    console.warn("WS not ready, ignoring user control update:", key);
+  }
+}
+
+// Update the treatment selector change handler:
+function handleTreatmentSelectionChange() {
+  const homePresetSel = qs('#homePresetSel');
+  if (!homePresetSel) return;
+  
+  homePresetSel.addEventListener('change', () => {
+    const selectedIdx = +homePresetSel.value;
+    
+    // If a different treatment is selected while paused, reset pause state
+    if (isPaused && lastSelectedTreatment !== selectedIdx) {
+      isPaused = false;
+      currentTreatmentState = null;
+      
+      const playPauseBtn = qs('#homePlayPauseBtn');
+      if (playPauseBtn) {
+        playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+        playPauseBtn.title = 'Play';
+        playPauseBtn.classList.remove('pause-btn');
+        playPauseBtn.classList.add('play-btn');
+      }
+    }
+  });
+}
+
+function getUserStrengthValues() {
+  return {
+    user_strength: parseInt(document.getElementById('strengthSlider').value, 10),
+    user_neck:     parseInt(document.getElementById('neckSlider').value, 10),
+    user_back:     parseInt(document.getElementById('backSlider').value, 10),
+    user_thighs:   parseInt(document.getElementById('thighsSlider').value, 10),
+    user_legs:     parseInt(document.getElementById('legsSlider').value, 10)
+  };
+}
+
+// Call this function in the window.addEventListener('load') section
+// Add this line at the end of the load event listener:
+// setupPreviewModal();
+</script>
+</body>
+</html>
