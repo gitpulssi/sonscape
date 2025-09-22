@@ -184,10 +184,10 @@ UNIT
 
 # 7. Comitup tweaks
 info "Configuring Comitup..."
-sudo tee /etc/comitup.conf >/dev/null <<'CONF'
+sudo tee /etc/comitup.conf >/dev/null <<EOF
 ap_name: SoniXscape
 ap_password: sonixscape123
-CONF
+EOF
 
 sudo tee /etc/systemd/system/sonixscape-ip-assign.service >/dev/null <<UNIT
 [Unit]
