@@ -36,6 +36,9 @@ sudo apt-get install -y \
 sudo mkdir -p /var/log/sonixscape
 sudo chown $CURRENT_USER:$CURRENT_USER /var/log/sonixscape
 
+sudo mkdir -p /opt
+sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt
+
 # 3. Build BlueALSA (bluealsa-aplay only)
 if ! command -v bluealsa-aplay >/dev/null 2>&1; then
     info "Building BlueALSA (bluealsa-aplay only)..."
