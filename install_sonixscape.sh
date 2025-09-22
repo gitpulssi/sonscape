@@ -18,6 +18,10 @@ CURRENT_USER=$(whoami)
 
 info "=== SoniXscape Installer started as $CURRENT_USER. Log: $LOG_FILE ==="
 
+# 0. Make sure /opt is writable by current user
+sudo mkdir -p /opt
+sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt
+
 # 1. Update system
 info "Updating system packages..."
 sudo apt-get update
@@ -34,10 +38,7 @@ sudo apt-get install -y \
 
 # Create log dir
 sudo mkdir -p /var/log/sonixscape
-sudo chown $CURRENT_USER:$CURRENT_USER /var/log/sonixscape
-
-sudo mkdir -p /opt
-sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt
+sudo chown "$CURRENT_USER":"$CURRENT_USER" /var/log/sonixscape
 
 # 3. Build BlueALSA (bluealsa-aplay only)
 if ! command -v bluealsa-aplay >/dev/null 2>&1; then
@@ -51,7 +52,6 @@ if ! command -v bluealsa-aplay >/dev/null 2>&1; then
     cd /opt
     if [[ ! -d bluez-alsa ]]; then
         git clone https://github.com/arkq/bluez-alsa.git
-        sudo chown -R "$CURRENT_USER":"$CURRENT_USER" bluez-alsa
     fi
 
     cd bluez-alsa
@@ -67,11 +67,11 @@ fi
 # 4. Install/Update SoniXscape code
 if [[ ! -d "$SONIX_DIR" ]]; then
     info "Cloning SoniXscape repo..."
-    sudo git clone https://github.com/gitpulssi/sonscape.git "$SONIX_DIR"
+    git clone https://github.com/gitpulssi/sonscape.git "$SONIX_DIR"
 else
     info "Updating existing SoniXscape repo..."
     cd "$SONIX_DIR"
-    sudo git pull
+    git pull
 fi
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" "$SONIX_DIR"
 
@@ -81,7 +81,7 @@ cd "$SONIX_DIR"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip wheel
-pip install -r requirements.txt
+pip install -r requirements.txt || true
 deactivate
 
 # 6. Systemd services
