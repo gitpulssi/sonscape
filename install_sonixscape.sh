@@ -18,14 +18,39 @@ info "Updating system packages..."
 sudo apt-get update
 sudo apt-get -y upgrade
 
-# 2. Install dependencies
+# 2. Install dependencies (excluding bluealsa – handled separately)
 info "Installing dependencies..."
 sudo apt-get install -y \
     python3 python3-pip python3-venv \
     python3-numpy python3-scipy python3-flask \
     python3-websockets python3-alsaaudio \
-    alsa-utils bluealsa \
-    git curl
+    alsa-utils git curl
+
+# 2b. Build BlueALSA (bluealsa-aplay) from source if missing
+if ! command -v bluealsa-aplay >/dev/null 2>&1; then
+    info "Building BlueALSA (bluealsa-aplay only) from source..."
+
+    sudo apt-get install -y \
+        build-essential autoconf automake libtool pkg-config \
+        libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
+        libsbc-dev libopenaptx-dev
+
+    cd /opt
+    if [[ ! -d bluez-alsa ]]; then
+        git clone https://github.com/arkq/bluez-alsa.git
+        sudo chown -R "$CURRENT_USER":"$CURRENT_USER" bluez-alsa
+    fi
+
+    cd bluez-alsa
+    autoreconf --install
+    rm -rf build
+    mkdir build && cd build
+
+    # Disable AAC / FDK to avoid missing deps
+    ../configure --disable-fdk-aac --disable-aac --enable-debug
+    make -j"$(nproc)"
+    sudo make install
+fi
 
 # 3. Install SoniXscape code
 if [[ ! -d "$SONIX_DIR" ]]; then
@@ -89,3 +114,4 @@ sudo systemctl enable sonixscape-ip-assign.service
 # 7. Done
 info "Installation complete!"
 info "Reboot now with: sudo reboot"
+eboot"
