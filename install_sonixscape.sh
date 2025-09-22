@@ -235,7 +235,7 @@ LOG_FILE="/var/log/sonixscape/health.log"
     if systemctl is-active --quiet "$svc"; then
       echo "[OK] $svc running"
     else
-      echo "[FAIL] $svc down → restarting..."
+      echo "[FAIL] $svc down ? restarting..."
       systemctl restart "$svc"
       sleep 2
       systemctl is-active --quiet "$svc" && echo "[RECOVERED] $svc back up" || echo "[ERROR] $svc still down"
