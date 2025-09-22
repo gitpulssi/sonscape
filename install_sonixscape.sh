@@ -11,6 +11,7 @@ fi
 
 SONIX_DIR=/opt/sonixscape
 WIFI_IFACE="wlan0"
+CURRENT_USER=$(whoami)
 
 # 1. Update base system
 info "Updating system packages..."
@@ -29,13 +30,13 @@ sudo apt-get install -y \
 # 3. Install SoniXscape code
 if [[ ! -d "$SONIX_DIR" ]]; then
     info "Cloning SoniXscape repo..."
-    sudo git clone https://github.com/YOUR_REPO/sonixscape.git "$SONIX_DIR"
+    sudo git clone https://github.com/gitpulssi/sonscape.git "$SONIX_DIR"
 else
     info "Updating existing SoniXscape repo..."
     cd "$SONIX_DIR"
     sudo git pull
 fi
-sudo chown -R $USER:$USER "$SONIX_DIR"
+sudo chown -R "$CURRENT_USER":"$CURRENT_USER" "$SONIX_DIR"
 
 # 4. Python virtual environment
 info "Setting up Python virtual environment..."
@@ -48,16 +49,16 @@ deactivate
 
 # 5. Systemd services
 info "Installing systemd service units..."
-sudo cp "$SONIX_DIR/systemd/"*.service /etc/systemd/system/
+sudo cp "$SONIX_DIR/systemd/"*.service /etc/systemd/system/ || true
 sudo systemctl daemon-reload
-sudo systemctl enable sonixscape-main.service
-sudo systemctl enable sonixscape-audio.service
-sudo systemctl enable sonixscape-bt-agent.service
+sudo systemctl enable sonixscape-main.service || true
+sudo systemctl enable sonixscape-audio.service || true
+sudo systemctl enable sonixscape-bt-agent.service || true
 
 # 6. Comitup tweaks
 info "Configuring Comitup..."
 
-# Custom AP name
+# Custom AP name + password
 sudo tee /etc/comitup.conf >/dev/null <<'CONF'
 ap_name: SoniXscape
 ap_password: sonixscape123
@@ -88,4 +89,3 @@ sudo systemctl enable sonixscape-ip-assign.service
 # 7. Done
 info "Installation complete!"
 info "Reboot now with: sudo reboot"
-
