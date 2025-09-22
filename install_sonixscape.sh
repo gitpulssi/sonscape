@@ -52,6 +52,27 @@ if ! command -v bluealsa-aplay >/dev/null 2>&1; then
     sudo make install
 fi
 
+# 2c. Install systemd unit for bluealsa-aplay
+info "Installing bluealsa-aplay systemd unit..."
+sudo tee /etc/systemd/system/sonixscape-bluealsa.service >/dev/null <<'UNIT'
+[Unit]
+Description=SoniXscape BlueALSA audio sink
+After=bluetooth.service sound.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bluealsa-aplay --profile-a2dp 00:00:00:00:00:00
+Restart=always
+User='"$CURRENT_USER"'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+sudo systemctl daemon-reload
+sudo systemctl enable sonixscape-bluealsa.service
+
 # 3. Install SoniXscape code
 if [[ ! -d "$SONIX_DIR" ]]; then
     info "Cloning SoniXscape repo..."
@@ -110,6 +131,19 @@ UNIT
 
 sudo systemctl daemon-reload
 sudo systemctl enable sonixscape-ip-assign.service
+
+# 7. Hostname setup
+info "Setting hostname to SoniXscape..."
+
+# Change system hostname
+echo "SoniXscape" | sudo tee /etc/hostname >/dev/null
+sudo hostnamectl set-hostname SoniXscape
+
+# Ensure /etc/hosts entry exists
+if ! grep -q "SoniXscape" /etc/hosts; then
+  sudo sed -i 's/^127.0.1.1.*/127.0.1.1   SoniXscape/' /etc/hosts || \
+  echo "127.0.1.1   SoniXscape" | sudo tee -a /etc/hosts
+fi
 
 # 7. Done
 info "Installation complete!"
