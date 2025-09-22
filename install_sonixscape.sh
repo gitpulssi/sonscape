@@ -1,153 +1,169 @@
 #!/bin/bash
 set -euo pipefail
 
+# ---------- logging ----------
 LOG_FILE="/var/log/sonixscape-install.log"
+mkdir -p /var/log 2>/dev/null || true
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 info() { echo -e "\033[1;32m[*]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[~]\033[0m $*"; }
-error() { echo -e "\033[1;31m[!]\033[0m $*"; }
+err()  { echo -e "\033[1;31m[!]\033[0m $*"; }
 
 if [[ $EUID -eq 0 ]]; then
-  error "Run as a normal user (not root). Use sudo inside the script when needed."
+  err "Run as a normal user (not root). Use sudo inside when needed."
   exit 1
 fi
 
-# ---------- SETTINGS ----------
+# ---------- settings ----------
 SONIX_DIR="/opt/sonixscape"
 WIFI_IFACE="wlan0"
 CURRENT_USER="$(whoami)"
-# ------------------------------
 
-info "=== SoniXscape Installer started as ${CURRENT_USER}. Log: ${LOG_FILE} ==="
+info "=== SoniXscape Installer (user: $CURRENT_USER) ==="
 
-# 0) Make /opt writable for the current user
+# ---------- prepare /opt ----------
 sudo mkdir -p /opt
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt
 
-# 1) Update base system
-info "Updating system packages..."
+# ---------- update base ----------
+info "Updating APT..."
 sudo apt-get update
 sudo apt-get -y upgrade
 
-# 2) Core dependencies (Python, audio, BT, math runtimes)
+# ---------- core deps ----------
 info "Installing core dependencies..."
 sudo apt-get install -y \
   python3 python3-pip python3-venv \
-  python3-numpy python3-flask \
-  python3-websockets python3-alsaaudio \
-  alsa-utils git curl \
-  bluetooth bluez \
+  python3-numpy python3-flask python3-websockets python3-alsaaudio \
+  python3-dbus python3-gi \
+  alsa-utils git curl bluetooth bluez \
   libopenblas0 liblapack3 \
-  libportaudio2 libportaudiocpp0 portaudio19-dev
+  libportaudio2 libportaudiocpp0 portaudio19-dev \
+  build-essential autoconf automake libtool pkg-config \
+  libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
+  libsbc-dev libopenaptx-dev
 
-# 2a) Create log directory
+# ---------- logging dir ----------
 sudo mkdir -p /var/log/sonixscape
 sudo chown "$CURRENT_USER":"$CURRENT_USER" /var/log/sonixscape
 
-# 3) Build BlueALSA (bluealsa-aplay only) if missing
+# ---------- BlueALSA (utils) ----------
 if ! command -v bluealsa-aplay >/dev/null 2>&1; then
-  info "Building BlueALSA (bluealsa-aplay only)..."
-  sudo apt-get install -y \
-    build-essential autoconf automake libtool pkg-config \
-    libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
-    libsbc-dev libopenaptx-dev
-
+  info "Building BlueALSA (utils forced)..."
   cd /opt
   if [[ ! -d bluez-alsa ]]; then
     git clone https://github.com/arkq/bluez-alsa.git
   fi
-
   cd /opt/bluez-alsa
   autoreconf --install
-  rm -rf build
-  mkdir build && cd build
-
-  # Disable AAC / FDK to avoid missing/removed deps on Bookworm
-  ../configure --disable-fdk-aac --disable-aac --enable-debug
+  rm -rf build && mkdir build && cd build
+  ../configure --disable-fdk-aac --disable-aac --enable-debug --enable-utils
   make -j"$(nproc)"
-  sudo make install
+  sudo make install || true
+
+  # Ensure the binary ends up in /usr/local/bin even if install skips it
+  if [[ -f utils/aplay/bluealsa-aplay ]]; then
+    sudo cp utils/aplay/bluealsa-aplay /usr/local/bin/
+  elif [[ -f utils/bluealsa-aplay ]]; then
+    sudo cp utils/bluealsa-aplay /usr/local/bin/
+  fi
+  sudo chmod +x /usr/local/bin/bluealsa-aplay || true
+
+  if ! command -v bluealsa-aplay >/dev/null 2>&1; then
+    err "bluealsa-aplay missing after build."
+    exit 1
+  fi
 else
-  info "bluealsa-aplay present. Skipping build."
+  info "bluealsa-aplay already present."
 fi
 
-# 4) Fetch/update SoniXscape app
+# ---------- fetch/update app ----------
 if [[ ! -d "$SONIX_DIR" ]]; then
-  info "Cloning SoniXscape repo..."
+  info "Cloning app repo..."
   git clone https://github.com/gitpulssi/sonscape.git "$SONIX_DIR"
 else
-  info "Updating SoniXscape repo..."
-  cd "$SONIX_DIR"
-  git pull
+  info "Updating app repo..."
+  cd "$SONIX_DIR" && git pull
 fi
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" "$SONIX_DIR"
 
-# 5) Python virtual environment + lightweight pip deps
-info "Setting up Python venv & packages..."
+# ---------- python env ----------
+info "Creating Python venv and installing light packages..."
 cd "$SONIX_DIR"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip wheel
-# Keep numpy from apt; install only light packages in the venv
+# Keep numpy from apt, add the rest in venv
 pip install flask websockets pyalsaaudio sounddevice
+# also install numpy in venv to avoid “ModuleNotFoundError: numpy” in user code
+pip install numpy
 deactivate
 
-# 6) Bluetooth auto-pair agent (creates bt_agent.py if missing)
+# ---------- detect ALSA device ----------
+info "Detecting first ALSA playback device..."
+CARD=$(aplay -l | awk '/^card [0-9]+:/{print $2; exit}' | tr -d ':')
+DEVICE=$(aplay -l | awk -v c="$CARD" '$0 ~ "^card "c":" {print $6; exit}' | tr -d ':')
+if [[ -z "${CARD:-}" || -z "${DEVICE:-}" ]]; then
+  err "No ALSA playback device found. Plug your USB DAC and rerun."
+  exit 1
+fi
+ALSA_DEV="hw:${CARD},${DEVICE}"
+echo "ALSA_DEVICE=$ALSA_DEV" > "$SONIX_DIR/sonixscape.conf"
+info "Using ALSA device: $ALSA_DEV"
+
+# ---------- make DAC default (safety net) ----------
+# If your code forgets to set a device, default->USB DAC
+info "Writing /etc/asound.conf to set USB DAC as default..."
+sudo tee /etc/asound.conf >/dev/null <<EOF
+pcm.!default {
+  type plug
+  slave.pcm "$ALSA_DEV"
+}
+ctl.!default {
+  type hw
+  card $CARD
+}
+EOF
+
+# ---------- bluetooth auto-pair agent ----------
 if [[ ! -f "$SONIX_DIR/bt_agent.py" ]]; then
-  info "Writing Bluetooth auto-pairing agent..."
-  cat > "$SONIX_DIR/bt_agent.py" <<'PYCODE'
+  info "Creating Bluetooth auto-pair agent..."
+  cat > "$SONIX_DIR/bt_agent.py" <<'PY'
 #!/usr/bin/env python3
-import dbus
-import dbus.mainloop.glib
-import dbus.service
+import dbus, dbus.mainloop.glib, dbus.service
 from gi.repository import GLib
-
 AGENT_PATH = "/test/agent"
-
 class Agent(dbus.service.Object):
-    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")  # noqa: D401
     def Release(self): pass
-
     @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
     def RequestPinCode(self, device): return "0000"
-
     @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
     def RequestPasskey(self, device): return dbus.UInt32(0)
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="ouq", out_signature="")
-    def DisplayPasskey(self, device, passkey, entered): pass
-
-    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
-    def DisplayPinCode(self, device, pincode): pass
-
     @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey): return
-
     @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
     def AuthorizeService(self, device, uuid): return
-
     @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
     def Cancel(self): pass
-
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
-    obj = bus.get_object("org.bluez", "/org/bluez")
-    mgr = dbus.Interface(obj, "org.bluez.AgentManager1")
+    mgr = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.AgentManager1")
     agent = Agent(bus, AGENT_PATH)
     mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
     mgr.RequestDefaultAgent(AGENT_PATH)
     print("SoniXscape Bluetooth agent running…")
     GLib.MainLoop().run()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-PYCODE
+PY
   chmod +x "$SONIX_DIR/bt_agent.py"
 fi
 
-# 7) Systemd services (all run as CURRENT_USER, with file logging)
-info "Creating systemd services..."
+# ---------- systemd services ----------
+info "Writing systemd units..."
 
 # Web UI (uses main_app.py)
 sudo tee /etc/systemd/system/sonixscape-main.service >/dev/null <<EOF
@@ -168,15 +184,16 @@ StandardError=append:/var/log/sonixscape/main.log
 WantedBy=multi-user.target
 EOF
 
-# Audio Engine
-sudo tee /etc/systemd/system/sonixscape-audio.service >/dev/null <<UNIT
+# Audio Engine (exports ALSA_DEVICE from config)
+sudo tee /etc/systemd/system/sonixscape-audio.service >/dev/null <<EOF
 [Unit]
 Description=SoniXscape Audio Engine
 After=sound.target
 
 [Service]
 WorkingDirectory=$SONIX_DIR
-ExecStart=$SONIX_DIR/venv/bin/python3 ws_audio.py
+EnvironmentFile=$SONIX_DIR/sonixscape.conf
+ExecStart=$SONIX_DIR/venv/bin/python3 $SONIX_DIR/ws_audio.py
 Restart=always
 User=$CURRENT_USER
 StandardOutput=append:/var/log/sonixscape/audio.log
@@ -184,10 +201,10 @@ StandardError=append:/var/log/sonixscape/audio.log
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-# Bluetooth Auto-Pair Agent
-sudo tee /etc/systemd/system/sonixscape-bt-agent.service >/dev/null <<UNIT
+# Bluetooth Agent
+sudo tee /etc/systemd/system/sonixscape-bt-agent.service >/dev/null <<EOF
 [Unit]
 Description=SoniXscape Bluetooth Auto-Pairing Agent
 After=bluetooth.service
@@ -202,10 +219,10 @@ StandardError=append:/var/log/sonixscape/bt-agent.log
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-# BlueALSA A2DP Sink (accept any paired device)
-sudo tee /etc/systemd/system/sonixscape-bluealsa.service >/dev/null <<UNIT
+# BlueALSA A2DP sink (accept any paired device)
+sudo tee /etc/systemd/system/sonixscape-bluealsa.service >/dev/null <<EOF
 [Unit]
 Description=SoniXscape BlueALSA audio sink
 After=bluetooth.service sound.target
@@ -221,10 +238,10 @@ StandardError=append:/var/log/sonixscape/bluealsa.log
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-# Health Check (self-healing)
-sudo tee /etc/systemd/system/sonixscape-health.service >/dev/null <<UNIT
+# Health check (self-healing, at boot + every 5 min)
+sudo tee /etc/systemd/system/sonixscape-health.service >/dev/null <<EOF
 [Unit]
 Description=SoniXscape Health Check
 After=multi-user.target
@@ -232,41 +249,33 @@ After=multi-user.target
 [Service]
 Type=oneshot
 ExecStart=$SONIX_DIR/health_check.sh
-UNIT
+EOF
 
-sudo tee /etc/systemd/system/sonixscape-health.timer >/dev/null <<UNIT
+sudo tee /etc/systemd/system/sonixscape-health.timer >/dev/null <<'EOF'
 [Unit]
 Description=Run SoniXscape Health Check at boot and every 5 minutes
-
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=5min
 Unit=sonixscape-health.service
-
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-# 8) Health-check script (auto-restarts failed services)
-info "Writing health-check script..."
+# Health check script
 cat > "$SONIX_DIR/health_check.sh" <<'EOS'
 #!/bin/bash
 LOG_FILE="/var/log/sonixscape/health.log"
 {
-  echo "=== SoniXscape Health Check: $(date) ==="
+  echo "=== Health Check: $(date) ==="
   for svc in sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-bluealsa sonixscape-ip-assign; do
     if systemctl is-active --quiet "$svc"; then
-      echo "[OK] $svc is running"
+      echo "[OK] $svc running"
     else
-      echo "[FAIL] $svc is NOT running → restarting..."
-      systemctl status "$svc" --no-pager -l | head -20
+      echo "[FAIL] $svc down → restarting..."
       systemctl restart "$svc"
       sleep 2
-      if systemctl is-active --quiet "$svc"; then
-        echo "[RECOVERED] $svc restarted successfully"
-      else
-        echo "[ERROR] $svc restart failed"
-      fi
+      systemctl is-active --quiet "$svc" && echo "[RECOVERED] $svc back up" || echo "[ERROR] $svc still down"
     fi
   done
   echo ""
@@ -274,7 +283,7 @@ LOG_FILE="/var/log/sonixscape/health.log"
 EOS
 chmod +x "$SONIX_DIR/health_check.sh"
 
-# 9) Comitup tweaks: AP name/password + static IP in AP mode
+# ---------- Comitup (AP name + static AP IP) ----------
 info "Configuring Comitup (AP SSID + password)..."
 sudo tee /etc/comitup.conf >/dev/null <<EOF
 ap_name: SoniXscape
@@ -282,7 +291,7 @@ ap_password: sonixscape123
 EOF
 
 info "Creating AP-mode static IP service..."
-sudo tee /etc/systemd/system/sonixscape-ip-assign.service >/dev/null <<UNIT
+sudo tee /etc/systemd/system/sonixscape-ip-assign.service >/dev/null <<EOF
 [Unit]
 Description=Force static IP on wlan0 for AP mode
 After=network-pre.target
@@ -297,30 +306,24 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
-# 10) Hostname setup
-info "Setting hostname to SoniXscape and updating /etc/hosts..."
+# ---------- Hostname ----------
+info "Setting hostname to SoniXscape..."
 echo "SoniXscape" | sudo tee /etc/hostname >/dev/null
 sudo hostnamectl set-hostname SoniXscape
 if ! grep -q "SoniXscape" /etc/hosts; then
-  sudo sed -i 's/^127.0.1.1.*/127.0.1.1   SoniXscape/' /etc/hosts || echo "127.0.1.1   SoniXscape" | sudo tee -a /etc/hosts
+  echo "127.0.1.1   SoniXscape" | sudo tee -a /etc/hosts >/dev/null
 fi
 
-# 11) Enable all services & timer
+# ---------- enable services ----------
 info "Enabling services..."
 sudo systemctl daemon-reload
-sudo systemctl enable sonixscape-main.service
-sudo systemctl enable sonixscape-audio.service
-sudo systemctl enable sonixscape-bt-agent.service
-sudo systemctl enable sonixscape-bluealsa.service
-sudo systemctl enable sonixscape-ip-assign.service
-sudo systemctl enable sonixscape-health.timer
-# (Timer will start at next boot; also safe to start it now)
+for S in sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-bluealsa sonixscape-ip-assign sonixscape-health.timer; do
+  sudo systemctl enable "$S"
+done
 sudo systemctl start sonixscape-health.timer || true
 
-# 12) Final note & reboot
-info "Installation complete! AP SSID will be 'SoniXscape' (password: 'sonixscape123') when in AP mode."
-info "Rebooting in 5 seconds..."
+info "Install complete. Rebooting in 5 seconds..."
 sleep 5
 sudo reboot
