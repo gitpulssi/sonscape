@@ -150,14 +150,14 @@ fi
 info "Creating systemd services..."
 
 # Web UI (uses main_app.py)
-sudo tee /etc/systemd/system/sonixscape-main.service >/dev/null <<UNIT
+sudo tee /etc/systemd/system/sonixscape-main.service >/dev/null <<EOF
 [Unit]
 Description=SoniXscape Web UI
 After=network-online.target
 
 [Service]
 WorkingDirectory=$SONIX_DIR
-ExecStart=$SONIX_DIR/venv/bin/python3 main_app.py
+ExecStart=$SONIX_DIR/venv/bin/python3 $SONIX_DIR/main_app.py
 Restart=always
 User=$CURRENT_USER
 Environment=PYTHONUNBUFFERED=1
@@ -166,7 +166,7 @@ StandardError=append:/var/log/sonixscape/main.log
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
 # Audio Engine
 sudo tee /etc/systemd/system/sonixscape-audio.service >/dev/null <<UNIT
