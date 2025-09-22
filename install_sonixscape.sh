@@ -27,7 +27,7 @@ sudo apt-get -y upgrade
 info "Installing dependencies..."
 sudo apt-get install -y \
     python3 python3-pip python3-venv \
-    python3-numpy python3-scipy python3-flask \
+    python3-numpy python3-flask \
     python3-websockets python3-alsaaudio \
     alsa-utils git curl \
     bluetooth bluez
