@@ -132,16 +132,16 @@ PY
 chmod +x "$SONIX_DIR/bt_agent.py"
 
 # ---------- systemd services ----------
-sudo tee /etc/systemd/system/sonixscape-main.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-main.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Web UI
 After=network-online.target
 
 [Service]
-WorkingDirectory=$SONIX_DIR
-ExecStart=$SONIX_DIR/venv/bin/python3 $SONIX_DIR/main_app.py
+WorkingDirectory=/opt/sonixscape
+ExecStart=/opt/sonixscape/venv/bin/python3 /opt/sonixscape/main_app.py
 Restart=always
-User=$CURRENT_USER
+User=comitup
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=append:/var/log/sonixscape/main.log
 StandardError=append:/var/log/sonixscape/main.log
@@ -150,17 +150,17 @@ StandardError=append:/var/log/sonixscape/main.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-audio.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-audio.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Audio Engine
 After=sound.target
 
 [Service]
-WorkingDirectory=$SONIX_DIR
-EnvironmentFile=$SONIX_DIR/sonixscape.conf
-ExecStart=$SONIX_DIR/venv/bin/python3 $SONIX_DIR/ws_audio.py
+WorkingDirectory=/opt/sonixscape
+EnvironmentFile=/opt/sonixscape/sonixscape.conf
+ExecStart=/opt/sonixscape/venv/bin/python3 /opt/sonixscape/ws_audio.py
 Restart=always
-User=$CURRENT_USER
+User=comitup
 StandardOutput=append:/var/log/sonixscape/audio.log
 StandardError=append:/var/log/sonixscape/audio.log
 
@@ -168,16 +168,16 @@ StandardError=append:/var/log/sonixscape/audio.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-bt-agent.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-bt-agent.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Bluetooth Auto-Pairing Agent
 After=bluetooth.service
 Requires=bluetooth.service
 
 [Service]
-ExecStart=$SONIX_DIR/venv/bin/python3 $SONIX_DIR/bt_agent.py
+ExecStart=/opt/sonixscape/venv/bin/python3 /opt/sonixscape/bt_agent.py
 Restart=always
-User=$CURRENT_USER
+User=comitup
 StandardOutput=append:/var/log/sonixscape/bt-agent.log
 StandardError=append:/var/log/sonixscape/bt-agent.log
 
@@ -185,7 +185,7 @@ StandardError=append:/var/log/sonixscape/bt-agent.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-bluealsa.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-bluealsa.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape BlueALSA audio sink
 After=bluetooth.service sound.target
@@ -195,7 +195,7 @@ Requires=bluetooth.service
 Type=simple
 ExecStart=/usr/local/bin/bluealsa-aplay --profile-a2dp 00:00:00:00:00:00
 Restart=always
-User=$CURRENT_USER
+User=comitup
 StandardOutput=append:/var/log/sonixscape/bluealsa.log
 StandardError=append:/var/log/sonixscape/bluealsa.log
 
@@ -203,17 +203,17 @@ StandardError=append:/var/log/sonixscape/bluealsa.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-health.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-health.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Health Check
 After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=$SONIX_DIR/health_check.sh
+ExecStart=/opt/sonixscape/health_check.sh
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-health.timer >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-health.timer > /dev/null <<'EOF'
 [Unit]
 Description=Run SoniXscape Health Check at boot and every 5 minutes
 
@@ -226,7 +226,6 @@ Unit=sonixscape-health.service
 WantedBy=multi-user.target
 EOF
 
-# ---------- health_check.sh ----------
 cat > "$SONIX_DIR/health_check.sh" <<'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/sonixscape/health.log"
@@ -248,12 +247,12 @@ EOF
 chmod +x "$SONIX_DIR/health_check.sh"
 
 # ---------- Comitup ----------
-sudo tee /etc/comitup.conf >/dev/null <<EOF
+sudo tee /etc/comitup.conf >/dev/null <<'EOF'
 ap_name: SoniXscape
 ap_password: sonixscape123
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-ip-assign.service >/dev/null <<EOF
+sudo tee /etc/systemd/system/sonixscape-ip-assign.service > /dev/null <<'EOF'
 [Unit]
 Description=Force static IP on wlan0 for AP mode
 After=network-pre.target
