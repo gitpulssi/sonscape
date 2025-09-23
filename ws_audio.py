@@ -335,13 +335,13 @@ class SineRowPlayer:
                 mode     = int(row.get("mode", 0))
 
                 # Logarithmic mapping for modulation frequency
-                mod_val  = float(row.get("modSpeed", 5))  # slider value 1–100
+                mod_val  = float(row.get("modSpeed", 5))  # slider value 1Â–100
                 f_min, f_max, N = 0.5, 6.0, 100
                 mod_freq = f_min * (f_max / f_min) ** ((mod_val - 1) / (N - 1))
 
                 # Burst grouping logic only used in drum modes
                 if mode in (8, 9):
-                    burst_len = max(1, int(round(phase / 22.5)))  # map 0–90° to 1–4 thumps
+                    burst_len = max(1, int(round(phase / 22.5)))  # map 0Â–90Â° to 1Â–4 thumps
                     burst_gap = 1
                 else:
                     burst_len = None
@@ -501,7 +501,7 @@ class SineRowPlayer:
                     pass
                     
             self._alsa_process = subprocess.Popen([
-                'aplay', '-D', 'plughw:1,0',  # Let ALSA adapt parameters
+                'aplay', '-D', 'plughw:0,0',  # Let ALSA adapt parameters
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
                 '--period-size=1200',         # 25ms periods
                 '--buffer-size=14400'         # 12 periods = 300ms headroom
