@@ -14,7 +14,6 @@ if [[ $EUID -eq 0 ]]; then
 fi
 
 SONIX_DIR="/opt/sonixscape"
-WIFI_IFACE="wlan0"
 CURRENT_USER="$(whoami)"
 
 info "=== SoniXscape Installer (user: $CURRENT_USER) ==="
@@ -217,6 +216,7 @@ EOF
 sudo tee /etc/systemd/system/sonixscape-health.timer >/dev/null <<EOF
 [Unit]
 Description=Run SoniXscape Health Check at boot and every 5 minutes
+
 [Timer]
 OnBootSec=30
 OnUnitActiveSec=5min
@@ -236,7 +236,7 @@ LOG_FILE="/var/log/sonixscape/health.log"
     if systemctl is-active --quiet "$svc"; then
       echo "[OK] $svc running"
     else
-      echo "[FAIL] $svc down ? restarting..."
+      echo "[FAIL] $svc down – restarting..."
       systemctl restart "$svc"
       sleep 2
       systemctl is-active --quiet "$svc" && echo "[RECOVERED] $svc back up" || echo "[ERROR] $svc still down"
@@ -262,8 +262,8 @@ Wants=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/sbin/ip addr add 10.42.0.1/24 dev $WIFI_IFACE || true
-ExecStart=/sbin/ip link set $WIFI_IFACE up
+ExecStart=/bin/sh -c '/sbin/ip addr add 10.42.0.1/24 dev wlan0 || true'
+ExecStart=/sbin/ip link set wlan0 up
 RemainAfterExit=yes
 
 [Install]
