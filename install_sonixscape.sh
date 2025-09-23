@@ -101,7 +101,7 @@ ctl.!default {
 EOF
 
 # ---------- bt_agent.py ----------
-cat > "$SONIX_DIR/bt_agent.py" <<'EOF'
+cat > "$SONIX_DIR/bt_agent.py" <<'PY'
 #!/usr/bin/env python3
 import dbus, dbus.mainloop.glib, dbus.service
 from gi.repository import GLib
@@ -129,7 +129,7 @@ def main():
     GLib.MainLoop().run()
 if __name__ == "__main__":
     main()
-EOF
+PY
 chmod +x "$SONIX_DIR/bt_agent.py"
 
 # ---------- systemd services ----------
@@ -221,6 +221,7 @@ Description=Run SoniXscape Health Check at boot and every 5 minutes
 OnBootSec=30
 OnUnitActiveSec=5min
 Unit=sonixscape-health.service
+
 [Install]
 WantedBy=multi-user.target
 EOF
