@@ -64,6 +64,15 @@ if ! command -v bluealsa-aplay >/dev/null 2>&1; then
   sudo chmod +x /usr/local/bin/bluealsa-aplay || true
 fi
 
+# ---------- ALSA Loopback ----------
+info "Enabling ALSA Loopback (snd-aloop)..."
+if ! lsmod | grep -q snd_aloop; then
+  sudo modprobe snd-aloop || true
+fi
+if ! grep -q "snd-aloop" /etc/modules; then
+  echo "snd-aloop" | sudo tee -a /etc/modules >/dev/null
+fi
+
 # ---------- fetch/update app ----------
 if [[ ! -d "$SONIX_DIR" ]]; then
   info "Cloning app repo..."
@@ -187,23 +196,11 @@ StandardError=append:/var/log/sonixscape/bt-agent.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee /etc/systemd/system/sonixscape-bluealsa.service > /dev/null <<'EOF'
-[Unit]
-Description=SoniXscape BlueALSA audio sink
-After=bluetooth.service sound.target
-Requires=bluetooth.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/bluealsa-aplay --profile-a2dp 00:00:00:00:00:00
-Restart=always
-User=comitup
-StandardOutput=append:/var/log/sonixscape/bluealsa.log
-StandardError=append:/var/log/sonixscape/bluealsa.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# ---------- REMOVE old BlueALSA sink service ----------
+if [ -f /etc/systemd/system/sonixscape-bluealsa.service ]; then
+  sudo systemctl disable --now sonixscape-bluealsa.service || true
+  sudo rm -f /etc/systemd/system/sonixscape-bluealsa.service
+fi
 
 sudo tee /etc/systemd/system/sonixscape-health.service > /dev/null <<'EOF'
 [Unit]
@@ -233,7 +230,7 @@ cat > "$SONIX_DIR/health_check.sh" <<'EOF'
 LOG_FILE="/var/log/sonixscape/health.log"
 {
   echo "=== Health Check: $(date) ==="
-  for svc in sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-bluealsa sonixscape-ip-assign; do
+  for svc in sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-ip-assign; do
     if systemctl is-active --quiet "$svc"; then
       echo "[OK] $svc running"
     else
@@ -280,7 +277,7 @@ fi
 
 # ---------- enable services ----------
 sudo systemctl daemon-reload
-SERVICES="sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-bluealsa sonixscape-ip-assign sonixscape-health.timer"
+SERVICES="sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-ip-assign sonixscape-health.timer"
 for S in $SERVICES; do
   sudo systemctl enable "$S"
 done
