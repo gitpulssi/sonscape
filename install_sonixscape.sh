@@ -24,12 +24,12 @@ sudo chown -R "$CURRENT_USER":"$CURRENT_USER" /opt
 
 # ---------- update base ----------
 info "Updating APT..."
-sudo apt-get update
-sudo apt-get -y upgrade
+sudo DEBIAN_FRONTEND=noninteractive apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get -y upgrade
 
 # ---------- core deps ----------
 info "Installing dependencies..."
-sudo apt-get install -y \
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-pip python3-venv \
   python3-numpy python3-flask python3-websockets python3-alsaaudio \
   python3-dbus python3-gi \
