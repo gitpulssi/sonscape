@@ -499,10 +499,10 @@ class SineRowPlayer:
                     self._alsa_process.wait(timeout=1)
                 except:
                     pass
-
-            # Use environment variable from sonixscape.conf if present
-            alsa_dev = os.environ.get("ALSA_DEVICE", "plughw:1,0")
-
+    
+            # After blacklisting, ICUSBAUDIO7D is always hw:0,0
+            alsa_dev = "hw:0,0"
+    
             self._alsa_process = subprocess.Popen([
                 'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
@@ -513,14 +513,13 @@ class SineRowPlayer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             bufsize=0)
-
-            print(f"[ALSA] Started output on {alsa_dev}")
+    
+            print(f"[ALSA] Forced output on {alsa_dev}")
             return True
-
+    
         except Exception as e:
             print(f"[ALSA] Failed to start: {e}")
             return False
-
         
     def _biquad_process_stereo(self, x_stereo, coeffs, state):
         """Process 2-ch block with a single biquad, transposed direct-form II."""
