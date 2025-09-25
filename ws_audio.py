@@ -331,7 +331,6 @@ class SineRowPlayer:
                 fsweep   = float(row.get("freqSweep", 0))
                 sspd     = float(row.get("sweepSpeed", 0))
                 dur      = float(row.get("time", 60))
-                dur = dur  # test mode: interpret directly as seconds
                 phase    = float(row.get("phase", 90))
                 mode     = int(row.get("mode", 0))
 
@@ -500,17 +499,28 @@ class SineRowPlayer:
                     self._alsa_process.wait(timeout=1)
                 except:
                     pass
-                    
+
+            # Use environment variable from sonixscape.conf if present
+            alsa_dev = os.environ.get("ALSA_DEVICE", "plughw:1,0")
+
             self._alsa_process = subprocess.Popen([
-                'aplay', '-D', 'plughw:0,0',  # Let ALSA adapt parameters
+                'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
-                '--period-size=1200',         # 25ms periods
-                '--buffer-size=14400'         # 12 periods = 300ms headroom
-            ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+                '--period-size=1200',
+                '--buffer-size=14400'
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            bufsize=0)
+
+            print(f"[ALSA] Started output on {alsa_dev}")
             return True
+
         except Exception as e:
             print(f"[ALSA] Failed to start: {e}")
             return False
+
         
     def _biquad_process_stereo(self, x_stereo, coeffs, state):
         """Process 2-ch block with a single biquad, transposed direct-form II."""
