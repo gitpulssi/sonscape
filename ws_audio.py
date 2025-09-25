@@ -331,6 +331,7 @@ class SineRowPlayer:
                 fsweep   = float(row.get("freqSweep", 0))
                 sspd     = float(row.get("sweepSpeed", 0))
                 dur      = float(row.get("time", 60))
+                dur = dur  # test mode: interpret directly as seconds
                 phase    = float(row.get("phase", 90))
                 mode     = int(row.get("mode", 0))
 
