@@ -499,10 +499,10 @@ class SineRowPlayer:
                     self._alsa_process.wait(timeout=1)
                 except:
                     pass
-    
-            # After blacklisting, ICUSBAUDIO7D is always hw:0,0
-            alsa_dev = "hw:0,0"
-    
+
+            # Use stable ALSA card name for ICUSBAUDIO7D
+            alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
+
             self._alsa_process = subprocess.Popen([
                 'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
@@ -513,14 +513,14 @@ class SineRowPlayer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             bufsize=0)
-    
-            print(f"[ALSA] Forced output on {alsa_dev}")
+
+            print(f"[ALSA] Using output device: {alsa_dev}")
             return True
-    
+
         except Exception as e:
             print(f"[ALSA] Failed to start: {e}")
             return False
-        
+
     def _biquad_process_stereo(self, x_stereo, coeffs, state):
         """Process 2-ch block with a single biquad, transposed direct-form II."""
         if coeffs is None:
@@ -826,30 +826,25 @@ class SineRowPlayer:
             return np.zeros((frames, CHANNELS), dtype=np.float32)
 
     def ensure_stream(self):
-        current_device_status = self.is_device_available()
-        self.device_available = current_device_status
-        
-        if not current_device_status:
-            return False
-        
-        # Don't create multiple threads
-        if hasattr(self, '_audio_running') and self._audio_running:
-            return True  # Already running
-        
         try:
-            # Initialize direct ALSA output
             if not self._init_alsa_output():
-                print("[!] Failed to initialize direct ALSA output")
+                print("[!] Failed to initialize ALSA output (no DAC found?)")
                 return False
-                
-            # Start pure threading approach (no sounddevice)
+
+            if getattr(self, '_audio_running', False):
+                return True  # Already running
+
+            # Start pure threading approach (no sounddevice dependency)
             self._audio_running = True
-            self._audio_thread = threading.Thread(target=self._pure_audio_loop, daemon=True)
+            self._audio_thread = threading.Thread(
+                target=self._pure_audio_loop,
+                daemon=True
+            )
             self._audio_thread.start()
-            
-            print("[+] Direct ALSA output and threading initialized")
+
+            print("[+] ALSA output and threading initialized")
             return True
-            
+
         except Exception as e:
             print(f"[!] Failed to start audio system: {e}")
             return False
