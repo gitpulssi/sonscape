@@ -93,9 +93,14 @@ pip install flask websockets pyalsaaudio sounddevice numpy
 deactivate
 
 # ---------- detect ALSA ----------
-CARD=$(aplay -l | awk '/^card [0-9]+:/{print $2; exit}' | tr -d ':')
+# Prefer ICUSBAUDIO7D card if present, otherwise fall back to first card
+CARD=$(aplay -l | awk '/ICUSBAUDIO7D/{print $2; exit}' | tr -d ':')
+if [ -z "$CARD" ]; then
+  CARD=$(aplay -l | awk '/^card [0-9]+:/{print $2; exit}' | tr -d ':')
+fi
 DEVICE=$(aplay -l | awk -v c="$CARD" '$0 ~ "^card "c":" {print $6; exit}' | tr -d ':')
 ALSA_DEV="hw:${CARD},${DEVICE}"
+
 echo "ALSA_DEVICE=$ALSA_DEV" > "$SONIX_DIR/sonixscape.conf"
 info "Selected ALSA device: $ALSA_DEV"
 
