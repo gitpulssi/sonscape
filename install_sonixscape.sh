@@ -92,6 +92,14 @@ pip install --upgrade pip wheel
 pip install flask websockets pyalsaaudio sounddevice numpy
 deactivate
 
+# ---------- webui config ----------
+info "Creating webui config directory..."
+mkdir -p /home/$CURRENT_USER/webui
+if [ ! -f /home/$CURRENT_USER/webui/mix.json ]; then
+  echo '{}' > /home/$CURRENT_USER/webui/mix.json
+fi
+chown -R "$CURRENT_USER":"$CURRENT_USER" /home/$CURRENT_USER/webui
+
 # ---------- detect ALSA ----------
 # Prefer ICUSBAUDIO7D card if present, otherwise fall back to first card
 CARD=$(aplay -l | awk '/ICUSBAUDIO7D/{print $2; exit}' | tr -d ':')
