@@ -386,7 +386,7 @@
     </div>
 
     <label>Preset&nbsp;
-      <input id="presetSearch" type="text" placeholder="Search…" style="padding:6px 8px;margin-right:8px;width:50%">
+      <input id="presetSearch" type="text" placeholder="Searchâ€¦" style="padding:6px 8px;margin-right:8px;width:50%">
       <select id="presetSel"></select>
     </label>
 
@@ -798,7 +798,7 @@ function playAll(){
     rows = scaleRowsBySession(rows).map(r => ({...r, ...userVals}));
   } else {
     // Manager view ? therapist minutes, convert to seconds
-    rows = rows.map(r => ({...r, ...userVals, time: r.time * 60}));
+    rows = rows.map(r => ({...r, ...userVals, time: r.time}));
   }
 
   send({action:'play-all', treatmentIndex:curIdx, rows});
@@ -1411,6 +1411,19 @@ function enhancedWebSocketHandler(ev) {
     }
 
     updateStatus('Playing', 'playing');
+    return;
+  }
+
+  if (msg.startsWith('highlight:')) {
+    const idx = parseInt(msg.split(':')[1], 10);
+    if (!isNaN(idx)) {
+      highlightRowUI(idx);   // apply yellow background
+    }
+    return;
+  }
+
+  if (msg === 'clear:highlight') {
+    clearPlayingHighlight();
     return;
   }
 
