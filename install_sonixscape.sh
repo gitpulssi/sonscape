@@ -95,9 +95,17 @@ deactivate
 # ---------- webui config ----------
 info "Creating webui config directory..."
 mkdir -p /home/$CURRENT_USER/webui
+
+# mix.json
 if [ ! -f /home/$CURRENT_USER/webui/mix.json ]; then
   echo '{}' > /home/$CURRENT_USER/webui/mix.json
 fi
+
+# config.json
+if [ ! -f /home/$CURRENT_USER/webui/config.json ]; then
+  echo '{}' > /home/$CURRENT_USER/webui/config.json
+fi
+
 chown -R "$CURRENT_USER":"$CURRENT_USER" /home/$CURRENT_USER/webui
 
 # ---------- detect ALSA ----------
@@ -299,3 +307,4 @@ sudo systemctl start sonixscape-health.timer || true
 info "Install complete. Rebooting in 5 seconds..."
 sleep 5
 sudo reboot
+
