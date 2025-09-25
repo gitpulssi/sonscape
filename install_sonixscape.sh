@@ -108,6 +108,19 @@ fi
 
 chown -R "$CURRENT_USER":"$CURRENT_USER" /home/$CURRENT_USER/webui
 
+# ---------- blacklist unwanted ALSA devices ----------
+info "Blacklisting Loopback and HDMI sound devices..."
+
+sudo tee /etc/modprobe.d/sonixscape-blacklist.conf >/dev/null <<'EOF'
+# Prevent loading of unwanted ALSA sound devices
+blacklist snd_aloop
+blacklist snd_hdmi_lpe_audio
+EOF
+
+# Remove them if already loaded in this session
+sudo rmmod snd_aloop 2>/dev/null || true
+sudo rmmod snd_hdmi_lpe_audio 2>/dev/null || true
+
 # ---------- detect ALSA ----------
 # Prefer ICUSBAUDIO7D card if present, otherwise fall back to first card
 CARD=$(aplay -l | awk '/ICUSBAUDIO7D/{print $2; exit}' | tr -d ':')
