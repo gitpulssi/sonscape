@@ -1356,19 +1356,19 @@ class WebSocketHandler:
                         print("[BT] Daemons not ready yet; retrying...")
                         await asyncio.sleep(2)
                         continue
-                    print("[BT] Setting up agent and making discoverable...")
-                    self._btctl("agent", "NoInputNoOutput")
-                    self._btctl("default-agent")
-                    self._btctl("pairable", "on")
-                    self._btctl("discoverable", "on")
-                    self._btctl("power", "on")
-                    _, show = self._btctl("show")
-                    if "Powered: yes" in show:
-                        did_agent = True
-                    else:
-                        print("[BT] Agent setup incomplete; will retry...")
-                        await asyncio.sleep(2)
-                        continue
+                print("[BT] Setting up agent and making discoverable...")
+                self._btctl("agent", "NoInputNoOutput")
+                self._btctl("default-agent")
+                self._btctl("pairable", "on")
+                self._btctl("discoverable", "on")
+                self._btctl("power", "on")
+                
+                # Confirm adapter state
+                ok, show = self._btctl("show")
+                if "Powered: yes" in show and "Discoverable: yes" in show and "Pairable: yes" in show:
+                    print("[BT] Adapter is discoverable and pairable – waiting for new device to pair")
+                else:
+                    print("[BT] WARNING: Adapter did not enter discoverable mode, check bluetoothd")
 
                 # --- AUTO MODE ---
                 if auto_mode:
