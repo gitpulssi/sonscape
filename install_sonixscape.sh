@@ -40,29 +40,11 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS \
   libportaudio2 libportaudiocpp0 portaudio19-dev \
   build-essential autoconf automake libtool pkg-config \
   libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
-  libsbc-dev libopenaptx-dev
+  libsbc-dev libopenaptx-dev \
+  bluez-alsa-utils
 
 sudo mkdir -p /var/log/sonixscape
 sudo chown "$CURRENT_USER":"$CURRENT_USER" /var/log/sonixscape
-
-# ---------- BlueALSA ----------
-if ! command -v bluealsa-aplay >/dev/null 2>&1; then
-  info "Building BlueALSA (forcing utils build)..."
-  cd /opt
-  if [[ ! -d bluez-alsa ]]; then
-    git clone https://github.com/arkq/bluez-alsa.git
-  fi
-  cd /opt/bluez-alsa
-  autoreconf --install
-  rm -rf build && mkdir build && cd build
-  ../configure --disable-fdk-aac --disable-aac --enable-debug --enable-utils
-  make -j"$(nproc)"
-  sudo make install || true
-  if [[ -f utils/aplay/bluealsa-aplay ]]; then
-    sudo cp utils/aplay/bluealsa-aplay /usr/local/bin/
-  fi
-  sudo chmod +x /usr/local/bin/bluealsa-aplay || true
-fi
 
 # ---------- ALSA Loopback ----------
 info "Enabling ALSA Loopback (snd-aloop)..."
@@ -109,40 +91,21 @@ fi
 chown -R "$CURRENT_USER":"$CURRENT_USER" /home/$CURRENT_USER/webui
 
 # ---------- blacklist unwanted ALSA devices ----------
-info "Blacklisting Loopback and HDMI sound devices..."
-
+info "Blacklisting HDMI sound devices..."
 sudo tee /etc/modprobe.d/sonixscape-blacklist.conf >/dev/null <<'EOF'
-# Prevent loading of unwanted ALSA sound devices
-blacklist snd_aloop
+# Prevent loading of unwanted ALSA devices
 blacklist snd_hdmi_lpe_audio
 EOF
-
-# Remove them if already loaded in this session
-sudo rmmod snd_aloop 2>/dev/null || true
 sudo rmmod snd_hdmi_lpe_audio 2>/dev/null || true
 
-# ---------- detect ALSA ----------
-# Prefer ICUSBAUDIO7D card if present, otherwise fall back to first card
-CARD=$(aplay -l | awk '/ICUSBAUDIO7D/{print $2; exit}' | tr -d ':')
-if [ -z "$CARD" ]; then
-  CARD=$(aplay -l | awk '/^card [0-9]+:/{print $2; exit}' | tr -d ':')
+# ---------- verify DAC ----------
+if ! aplay -l | grep -q ICUSBAUDIO7D; then
+  err "ICUSBAUDIO7D DAC not detected – cannot continue."
+  exit 1
 fi
-DEVICE=$(aplay -l | awk -v c="$CARD" '$0 ~ "^card "c":" {print $6; exit}' | tr -d ':')
-ALSA_DEV="hw:${CARD},${DEVICE}"
 
-echo "ALSA_DEVICE=$ALSA_DEV" > "$SONIX_DIR/sonixscape.conf"
-info "Selected ALSA device: $ALSA_DEV"
-
-sudo tee /etc/asound.conf >/dev/null <<EOF
-pcm.!default {
-  type plug
-  slave.pcm "$ALSA_DEV"
-}
-ctl.!default {
-  type hw
-  card $CARD
-}
-EOF
+echo "ALSA_DEVICE=plughw:CARD=ICUSBAUDIO7D,DEV=0" > "$SONIX_DIR/sonixscape.conf"
+info "Selected ALSA device: plughw:CARD=ICUSBAUDIO7D,DEV=0"
 
 # ---------- systemd services ----------
 sudo tee /etc/systemd/system/sonixscape-main.service > /dev/null <<'EOF'
@@ -181,12 +144,6 @@ StandardError=append:/var/log/sonixscape/audio.log
 [Install]
 WantedBy=multi-user.target
 EOF
-
-# ---------- REMOVE old BlueALSA sink service ----------
-if [ -f /etc/systemd/system/sonixscape-bluealsa.service ]; then
-  sudo systemctl disable --now sonixscape-bluealsa.service || true
-  sudo rm -f /etc/systemd/system/sonixscape-bluealsa.service
-fi
 
 sudo tee /etc/systemd/system/sonixscape-health.service > /dev/null <<'EOF'
 [Unit]
