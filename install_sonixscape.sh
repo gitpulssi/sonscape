@@ -144,38 +144,6 @@ ctl.!default {
 }
 EOF
 
-# ---------- bt_agent.py ----------
-cat > "$SONIX_DIR/bt_agent.py" <<'PY'
-#!/usr/bin/env python3
-import dbus, dbus.mainloop.glib, dbus.service
-from gi.repository import GLib
-AGENT_PATH = "/test/agent"
-class Agent(dbus.service.Object):
-    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="") 
-    def Release(self): pass
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="") 
-    def RequestPinCode(self, device): return "0000"
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u") 
-    def RequestPasskey(self, device): return dbus.UInt32(0)
-    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="") 
-    def RequestConfirmation(self, device, passkey): return
-    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="") 
-    def AuthorizeService(self, device, uuid): return
-    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="") 
-    def Cancel(self): pass
-def main():
-    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-    bus = dbus.SystemBus()
-    mgr = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.AgentManager1")
-    agent = Agent(bus, AGENT_PATH)
-    mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
-    mgr.RequestDefaultAgent(AGENT_PATH)
-    GLib.MainLoop().run()
-if __name__ == "__main__":
-    main()
-PY
-chmod +x "$SONIX_DIR/bt_agent.py"
-
 # ---------- systemd services ----------
 sudo tee /etc/systemd/system/sonixscape-main.service > /dev/null <<'EOF'
 [Unit]
@@ -198,7 +166,8 @@ EOF
 sudo tee /etc/systemd/system/sonixscape-audio.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Audio Engine
-After=sound.target
+After=sound.target bluetooth.service
+Requires=bluetooth.service
 
 [Service]
 WorkingDirectory=/opt/sonixscape
@@ -208,23 +177,6 @@ Restart=always
 User=comitup
 StandardOutput=append:/var/log/sonixscape/audio.log
 StandardError=append:/var/log/sonixscape/audio.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo tee /etc/systemd/system/sonixscape-bt-agent.service > /dev/null <<'EOF'
-[Unit]
-Description=SoniXscape Bluetooth Auto-Pairing Agent
-After=bluetooth.service
-Requires=bluetooth.service
-
-[Service]
-ExecStart=/opt/sonixscape/venv/bin/python3 /opt/sonixscape/bt_agent.py
-Restart=always
-User=comitup
-StandardOutput=append:/var/log/sonixscape/bt-agent.log
-StandardError=append:/var/log/sonixscape/bt-agent.log
 
 [Install]
 WantedBy=multi-user.target
@@ -264,7 +216,7 @@ cat > "$SONIX_DIR/health_check.sh" <<'EOF'
 LOG_FILE="/var/log/sonixscape/health.log"
 {
   echo "=== Health Check: $(date) ==="
-  for svc in sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-ip-assign; do
+  for svc in sonixscape-main sonixscape-audio sonixscape-ip-assign; do
     if systemctl is-active --quiet "$svc"; then
       echo "[OK] $svc running"
     else
@@ -311,7 +263,7 @@ fi
 
 # ---------- enable services ----------
 sudo systemctl daemon-reload
-SERVICES="sonixscape-main sonixscape-audio sonixscape-bt-agent sonixscape-ip-assign sonixscape-health.timer"
+SERVICES="sonixscape-main sonixscape-audio sonixscape-ip-assign sonixscape-health.timer"
 for S in $SERVICES; do
   sudo systemctl enable "$S"
 done
@@ -320,4 +272,3 @@ sudo systemctl start sonixscape-health.timer || true
 info "Install complete. Rebooting in 5 seconds..."
 sleep 5
 sudo reboot
-
