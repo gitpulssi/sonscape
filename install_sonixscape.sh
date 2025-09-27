@@ -127,43 +127,49 @@ info "Selected ALSA device: plughw:CARD=ICUSBAUDIO7D,DEV=0"
 info "Creating Bluetooth NoInputNoOutput agent..."
 sudo tee /usr/local/bin/bt-agent-setup.py > /dev/null <<'EOF'
 #!/usr/bin/env python3
-import subprocess
-import time
-import signal
+import dbus, dbus.mainloop.glib, dbus.service
+from gi.repository import GLib
 import sys
 
-def signal_handler(sig, frame):
-    print('Bluetooth agent shutting down...')
-    sys.exit(0)
+AGENT_PATH = "/test/agent"
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+class Agent(dbus.service.Object):
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Release(self): 
+        print("[BT_AGENT] Agent released")
 
-try:
-    # Start bluetoothctl
-    proc = subprocess.Popen(['bluetoothctl'], 
-                           stdin=subprocess.PIPE, 
-                           stdout=subprocess.PIPE, 
-                           stderr=subprocess.PIPE,
-                           text=True)
-    
-    # Send commands
-    proc.stdin.write('agent NoInputNoOutput\n')
-    proc.stdin.flush()
-    time.sleep(1)
-    
-    proc.stdin.write('default-agent\n')
-    proc.stdin.flush()
-    
-    print("Bluetooth agent registered successfully")
-    
-    # Keep running
-    while True:
-        time.sleep(10)
-        
-except Exception as e:
-    print(f"Error: {e}")
-    sys.exit(1)
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        print(f"[BT_AGENT] Auto-confirmed {passkey} for {device}")
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        print(f"[BT_AGENT] Auto-authorized service {uuid} for {device}")
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Cancel(self): 
+        print("[BT_AGENT] Agent cancelled")
+
+def main():
+    try:
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        bus = dbus.SystemBus()
+        mgr = dbus.Interface(bus.get_object("org.bluez", "/org/bluez"), "org.bluez.AgentManager1")
+
+        agent = Agent(bus, AGENT_PATH)
+        mgr.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+        mgr.RequestDefaultAgent(AGENT_PATH)
+
+        print("[BT_AGENT] NoInputNoOutput agent registered and set as default")
+        GLib.MainLoop().run()
+    except Exception as e:
+        print(f"[BT_AGENT] Error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
 EOF
 
 sudo chmod +x /usr/local/bin/bt-agent-setup.py
@@ -232,7 +238,7 @@ Requires=bluetooth.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bluealsa -S -i hci0 -p a2dp-sink --a2dp-force-audio-cd --sbc-quality=xq --a2dp-keep-alive=30
+ExecStart=/usr/bin/bluealsa -S -i hci0 -p a2dp-sink
 Restart=on-failure
 RestartSec=5
 
@@ -334,16 +340,17 @@ fi
 
 # ---------- Bluetooth configuration ----------
 info "Configuring Bluetooth for audio..."
-sudo tee -a /etc/bluetooth/main.conf >/dev/null <<'EOF'
-
-# SoniXscape Bluetooth Audio Configuration
+sudo tee /etc/bluetooth/main.conf >/dev/null <<'EOF'
 [General]
-Class = 0x00041C
+Name = SoniXscape
+Class = 0x20041C
 DiscoverableTimeout = 0
 PairableTimeout = 0
+Discoverable = true
+Pairable = true
 
 [Policy]
-AutoEnable=true
+AutoEnable = true
 EOF
 
 # ---------- enable services ----------
@@ -353,6 +360,19 @@ for S in $SERVICES; do
   sudo systemctl enable "$S"
 done
 sudo systemctl start sonixscape-health.timer || true
+
+# ---------- ensure bluetooth is properly configured ----------
+info "Configuring Bluetooth controller..."
+sudo systemctl restart bluetooth
+sleep 3
+
+# Configure bluetooth controller via bluetoothctl
+sudo bash -c 'bluetoothctl << EOF
+power on
+discoverable on
+pairable on
+exit
+EOF' || true
 
 info "=== Installation Summary ==="
 info "✓ Core system and dependencies installed"
