@@ -18,7 +18,7 @@ CURRENT_USER="$(whoami)"
 
 APT_OPTS="-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-info "=== SoniXscape Installer (user: $CURRENT_USER) ==="
+info "=== SoniXscape Installer with Bluetooth Audio (user: $CURRENT_USER) ==="
 
 # ---------- prepare /opt ----------
 sudo mkdir -p /opt
@@ -29,7 +29,7 @@ info "Updating APT..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y $APT_OPTS upgrade
 
-# ---------- core deps ----------
+# ---------- core deps + bluetooth ----------
 info "Installing dependencies..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS \
   python3 python3-pip python3-venv \
@@ -41,7 +41,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS \
   build-essential autoconf automake libtool pkg-config \
   libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
   libsbc-dev libopenaptx-dev \
-  bluez-alsa-utils
+  bluez-alsa-utils bluez-tools
 
 sudo mkdir -p /var/log/sonixscape
 sudo chown "$CURRENT_USER":"$CURRENT_USER" /var/log/sonixscape
@@ -53,6 +53,21 @@ if ! lsmod | grep -q snd_aloop; then
 fi
 if ! grep -q "snd-aloop" /etc/modules; then
   echo "snd-aloop" | sudo tee -a /etc/modules >/dev/null
+fi
+
+# ---------- Build bluez-alsa from source ----------
+info "Building bluez-alsa from source for better compatibility..."
+cd /opt
+if [[ ! -d "bluez-alsa-3.0.0" ]]; then
+  wget https://github.com/Arkq/bluez-alsa/archive/v3.0.0.tar.gz
+  tar -xzf v3.0.0.tar.gz
+  cd bluez-alsa-3.0.0
+  autoreconf -fiv
+  mkdir build && cd build
+  ../configure --enable-cli --enable-rfcomm --enable-a2dpconf
+  make -j$(nproc)
+  sudo make install
+  sudo ldconfig
 fi
 
 # ---------- fetch/update app ----------
@@ -107,6 +122,51 @@ fi
 echo "ALSA_DEVICE=plughw:CARD=ICUSBAUDIO7D,DEV=0" > "$SONIX_DIR/sonixscape.conf"
 info "Selected ALSA device: plughw:CARD=ICUSBAUDIO7D,DEV=0"
 
+# ---------- bluetooth agent service ----------
+info "Creating Bluetooth NoInputNoOutput agent..."
+sudo tee /usr/local/bin/bt-agent-setup.py > /dev/null <<'EOF'
+#!/usr/bin/env python3
+import subprocess
+import time
+import signal
+import sys
+
+def signal_handler(sig, frame):
+    print('Bluetooth agent shutting down...')
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+try:
+    # Start bluetoothctl
+    proc = subprocess.Popen(['bluetoothctl'], 
+                           stdin=subprocess.PIPE, 
+                           stdout=subprocess.PIPE, 
+                           stderr=subprocess.PIPE,
+                           text=True)
+    
+    # Send commands
+    proc.stdin.write('agent NoInputNoOutput\n')
+    proc.stdin.flush()
+    time.sleep(1)
+    
+    proc.stdin.write('default-agent\n')
+    proc.stdin.flush()
+    
+    print("Bluetooth agent registered successfully")
+    
+    # Keep running
+    while True:
+        time.sleep(10)
+        
+except Exception as e:
+    print(f"Error: {e}")
+    sys.exit(1)
+EOF
+
+sudo chmod +x /usr/local/bin/bt-agent-setup.py
+
 # ---------- systemd services ----------
 sudo tee /etc/systemd/system/sonixscape-main.service > /dev/null <<'EOF'
 [Unit]
@@ -145,6 +205,59 @@ StandardError=append:/var/log/sonixscape/audio.log
 WantedBy=multi-user.target
 EOF
 
+# ---------- bluetooth services ----------
+sudo tee /etc/systemd/system/sonixscape-bt-agent.service > /dev/null <<'EOF'
+[Unit]
+Description=SoniXscape Bluetooth Just-Works Agent
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bt-agent-setup.py
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/bluealsa.service > /dev/null <<'EOF'
+[Unit]
+Description=BlueALSA daemon
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bluealsa -S -i hci0 -p a2dp-sink --a2dp-force-audio-cd --sbc-quality=xq --a2dp-keep-alive=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/bluealsa-aplay.service > /dev/null <<'EOF'
+[Unit]
+Description=BlueALSA Audio Player - Universal
+After=bluealsa.service
+Requires=bluealsa.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=1000000 --pcm-period-time=250000 -D hw:0,1 00:00:00:00:00:00
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo tee /etc/systemd/system/sonixscape-health.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Health Check
@@ -173,7 +286,7 @@ cat > "$SONIX_DIR/health_check.sh" <<'EOF'
 LOG_FILE="/var/log/sonixscape/health.log"
 {
   echo "=== Health Check: $(date) ==="
-  for svc in sonixscape-main sonixscape-audio sonixscape-ip-assign; do
+  for svc in sonixscape-main sonixscape-audio sonixscape-ip-assign sonixscape-bt-agent bluealsa bluealsa-aplay; do
     if systemctl is-active --quiet "$svc"; then
       echo "[OK] $svc running"
     else
@@ -218,14 +331,44 @@ if ! grep -q "SoniXscape" /etc/hosts; then
   echo "127.0.1.1   SoniXscape" | sudo tee -a /etc/hosts >/dev/null
 fi
 
+# ---------- Bluetooth configuration ----------
+info "Configuring Bluetooth for audio..."
+sudo tee -a /etc/bluetooth/main.conf >/dev/null <<'EOF'
+
+# SoniXscape Bluetooth Audio Configuration
+[General]
+Class = 0x00041C
+DiscoverableTimeout = 0
+PairableTimeout = 0
+
+[Policy]
+AutoEnable=true
+EOF
+
 # ---------- enable services ----------
 sudo systemctl daemon-reload
-SERVICES="sonixscape-main sonixscape-audio sonixscape-ip-assign sonixscape-health.timer"
+SERVICES="sonixscape-main sonixscape-audio sonixscape-ip-assign sonixscape-health.timer sonixscape-bt-agent bluealsa bluealsa-aplay"
 for S in $SERVICES; do
   sudo systemctl enable "$S"
 done
 sudo systemctl start sonixscape-health.timer || true
 
+info "=== Installation Summary ==="
+info "✓ Core system and dependencies installed"
+info "✓ ALSA loopback module enabled"
+info "✓ BluezALSA compiled and configured"
+info "✓ Bluetooth agent service created (NoInputNoOutput)"
+info "✓ Universal Bluetooth audio service created"
+info "✓ Audio routing: BT → hw:0,1 → Mixer → 8ch Amplifier"
+info "✓ First-come-first-served Bluetooth connection"
+info "✓ Health monitoring enabled"
+info ""
+info "Bluetooth audio will automatically:"
+info "  • Accept connections from any phone"
+info "  • Route audio to your mixer via loopback"
+info "  • Work with your web interface mix slider"
+info "  • Restart automatically if it fails"
+info ""
 info "Install complete. Rebooting in 5 seconds..."
 sleep 5
 sudo reboot
