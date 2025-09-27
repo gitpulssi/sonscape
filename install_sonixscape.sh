@@ -41,7 +41,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS \
   build-essential autoconf automake libtool pkg-config \
   libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev \
   libsbc-dev libopenaptx-dev \
-  bluez-alsa-utils bluez-tools
+  bluez-alsa-utils bluez-tools \
+  libreadline-dev libncurses5-dev
 
 sudo mkdir -p /var/log/sonixscape
 sudo chown "$CURRENT_USER":"$CURRENT_USER" /var/log/sonixscape
