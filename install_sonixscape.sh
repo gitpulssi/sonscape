@@ -249,14 +249,14 @@ EOF
 sudo tee /etc/systemd/system/bluealsa-aplay.service > /dev/null <<'EOF'
 [Unit]
 Description=BlueALSA Audio Player - Universal
-After=bluealsa.service
+After=bluealsa.service sonixscape-audio.service
 Requires=bluealsa.service
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sleep 10
-ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=1000000 --pcm-period-time=250000 -D hw:0,1 00:00:00:00:00:00
+ExecStartPre=/bin/sleep 15
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=1000000 --pcm-period-time=250000 -D hw:0,0 00:00:00:00:00:00
 Restart=always
 RestartSec=3
 User=root
