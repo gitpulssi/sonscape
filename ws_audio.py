@@ -2,12 +2,21 @@
 # -*- coding: utf-8 -*-
 import sounddevice as sd, asyncio, os, time, math, numpy as np
 import websockets, subprocess, sys, atexit, signal, json, fcntl, re
-import threading
+import threading, queue
 from pathlib import Path
-import os
-os.environ['SDL_AUDIODRIVER'] = 'alsa'  # Force ALSA
+from collections import deque
 
-# Try ALSA (for Bluetooth capture)
+# Try to import scipy for optimized filtering
+try:
+    from scipy import signal as scipy_signal
+    SCIPY_AVAILABLE = True
+    print("[FILTER] Using scipy optimized lowpass filter")
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("[FILTER] scipy not available, using simple FIR filter")
+
+os.environ['SDL_AUDIODRIVER'] = 'alsa'
+
 try:
     import alsaaudio; ALSA_AVAILABLE=True; print("[BT] ALSA audio support available")
 except ImportError:
@@ -21,7 +30,7 @@ except OSError: print("[FATAL] Another ws_audio.py is already running; exiting."
 # Constants
 RATE=48000; BLOCK=1200; CHANNELS=8; PORT=8081; DEVICE_NAME="ICUSBAUDIO7D"
 FADE_TIME=4.0; FADE_SAMPLES=int(FADE_TIME*RATE)
-CHANNEL_MAP={"neck":(0,1),"back":(4,5),"thighs":(6,7),"legs":(2,3)}
+CHANNEL_MAP={"neck":(0,1),"back":(2,3),"thighs":(4,5),"legs":(6,7)}
 MODE_ROUTING={
 0:{0:[0,1],1:[2,3],2:[4,5],3:[6,7]},
 1:{0:[6,7],1:[4,5],2:[2,3],3:[0,1]},
@@ -41,21 +50,16 @@ def load_config():
     return {}
     
 def apply_dual_strength(matrix_val: int, user_val: int | None, min_limit=0, max_limit=9) -> int:
-   
     matrix_val = max(min_limit, min(max_limit, matrix_val))
     if user_val is None:
-        return matrix_val  # fallback if not provided
-
+        return matrix_val
     user_val = max(0, min(9, user_val))
-
     if user_val == 5:
         return matrix_val
     elif user_val < 5:
-        # scale down relative to baseline
         scale = user_val / 5.0
         return int(max(min_limit, round(matrix_val * scale)))
     else:
-        # scale up relative to baseline
         scale = 1.0 + (user_val - 5) / 5.0
         return int(min(max_limit, round(matrix_val * scale)))
 
@@ -63,14 +67,12 @@ def scaled_amp(strength_step: int, trim_step: int) -> float:
     strength_step = max(0, min(9, strength_step))
     trim_step = max(0, min(9, trim_step))
     base = strength_step * 10
-
     if trim_step == 5:
         amp = base
     elif trim_step < 5:
         amp = base - (5 - trim_step) * (base / 5)
     else:
         amp = base + (trim_step - 5) * ((90 - base) / 5)
-
     return amp / 90.0
 
 # ---- Player ----
@@ -87,21 +89,34 @@ class SineRowPlayer:
         self.output_device_hint = "ICUSBAUDIO7D"
         self.therapy_gain = 1.0
 
-        # Bluetooth audio integration
+        # Bluetooth audio integration with ring buffer
         self.bt_input = None
         self.bt_mac_current = None
         self.bt_gain = 0.5
-        self.bt_buffer = np.zeros((BLOCK, 2), dtype=np.float32)
         self.bt_enabled = False
         self.bt_mono = True
         self.bt_lpf_fc = 200.0
-        self._bt_lpf_coeffs = None
-        self._bt_lpf_state = np.zeros((2, 2), dtype=np.float32)
-        self._bt_zero_blocks = 0
-        self._bt_zero_limit = 60
+        self._bt_lpf_sos = None  # Use scipy SOS (second-order sections) format
+        self._bt_lpf_zi = None   # Filter initial conditions
         self._bt_reinit_cooldown_s = 5.0
         self._bt_last_reinit = 0.0
         
+        # Ring buffer for BT audio (8x buffer size for more stability)
+        self.bt_ring_buffer = np.zeros((BLOCK * 8, 2), dtype=np.float32)
+        self.bt_ring_write_pos = 0
+        self.bt_ring_read_pos = 0
+        self.bt_ring_fill = 0
+        self.bt_ring_lock = threading.Lock()
+        
+        # BT read thread
+        self.bt_read_thread = None
+        self.bt_read_running = False
+        
+        # WiFi streaming mode
+        self.wifi_stream_enabled = False
+        self.wifi_audio_queue = queue.Queue(maxsize=100)  # Large buffer for continuous streaming
+        self.wifi_stream_underruns = 0
+
         # Sequence state
         self.sequence_rows = None
         self.current_row_index = 0
@@ -115,7 +130,7 @@ class SineRowPlayer:
         self.fade_multiplier = 0.0
         self.row_start_time = 0.0
 
-        # Pause/Resume state - INITIALIZE THESE FIRST
+        # Pause/Resume state
         self.is_paused = False
         self.pause_requested = False
         self.resume_requested = False
@@ -124,33 +139,6 @@ class SineRowPlayer:
 
         self.ensure_stream()
            
-    def _start_audio_thread(self):
-        """Start audio generation thread without sounddevice"""
-        self._audio_running = True
-        self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True)
-        self._audio_thread.start()
-
-    def _audio_loop(self):
-        """Audio generation loop - replaces sounddevice callback"""
-        frames_per_callback = BLOCK  # 2400 frames
-        sleep_time = frames_per_callback / RATE  # ~0.05 seconds per callback
-        
-        while self._audio_running:
-            try:
-                # Generate the same audio data as before
-                mixed_signal = self._generate_therapy_audio(frames_per_callback)
-                
-                # Write directly to ALSA
-                int16_data = (mixed_signal * 32767.0).astype(np.int16)
-                if hasattr(self, '_alsa_process') and self._alsa_process.poll() is None:
-                    self._alsa_process.stdin.write(int16_data.tobytes())
-                    self._alsa_process.stdin.flush()
-                    
-            except Exception as e:
-                print(f"[AUDIO] Loop error: {e}")
-                
-            time.sleep(sleep_time)
-            
     def request_pause(self):
         """Request a pause with fade-out"""
         if self.row and not self.is_paused and not self.pause_requested:
@@ -194,7 +182,6 @@ class SineRowPlayer:
             return False
             
         try:
-            # Restore the row data and state
             self.row = state['row_data']
             self.sequence_rows = state['sequence_rows'] 
             self.current_row_index = state['current_row_index']
@@ -203,18 +190,13 @@ class SineRowPlayer:
             self.mod_phase_accum = state['mod_phase_accum']
             self.last_inst_f = state['last_inst_f']
             
-            # Calculate new start time to resume from correct position
             current_time = time.perf_counter()
             self.row_start_time = current_time - state['elapsed_time']
             
-            # Clear pause state
             self.is_paused = False
-            
-            # Start with fade-in
             self._start_fade_in()
             
             print(f"[RESUME] State restored - resuming from {state['elapsed_time']:.2f}s")
-            print(f"[RESUME] Row {self.current_row_index}, sequence: {self.is_playing_sequence}")
             return True
             
         except Exception as e:
@@ -222,51 +204,61 @@ class SineRowPlayer:
             return False 
 
     def _generate_heartbeat_env(self, frames, bpm=60, ratio=0.25):
-        """
-        Generate heartbeat envelope: "TADAM ... TADAM ..."
-        bpm   = beats per minute (controls tempo, driven by modSpeed)
-        ratio = fraction of cycle before the 2nd (soft) thump
-        """
+        """Generate heartbeat envelope: "TADAM ... TADAM ..." """
         dt = 1.0 / RATE
         t = np.arange(frames, dtype=np.float32) * dt
-
-        cycle = 60.0 / bpm  # seconds per beat cycle
+        cycle = 60.0 / bpm
         env = np.zeros_like(t)
-
         for i, ti in enumerate(t):
             pos = ti % cycle
-
-            # First thump (strong, sharp attack, moderate decay)
-            if pos < 0.08:  # ~80 ms window
+            if pos < 0.08:
                 env[i] = np.exp(-pos / 0.03)
-
-            # Second thump (softer, shorter, later in cycle)
             elif ratio * cycle <= pos < ratio * cycle + 0.06:
                 env[i] = 0.6 * np.exp(-(pos - ratio * cycle) / 0.02)
-
         return env
+        
+    def _init_alsa_output(self):
+        try:
+            # If ALSA output is already running, don't restart it
+            if hasattr(self, '_alsa_process') and self._alsa_process:
+                if self._alsa_process.poll() is None:  # Still running
+                    print(f"[ALSA] Output already active, reusing existing process")
+                    return True
+
+            # Only start new process if needed
+            alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
+            self._alsa_process = subprocess.Popen([
+                'aplay', '-D', alsa_dev,
+                '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
+                '--period-size=1200',
+                '--buffer-size=14400'
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            bufsize=0)
+
+            print(f"[ALSA] Using output device: {alsa_dev}")
+            return True
+
+        except Exception as e:
+            print(f"[ALSA] Failed to start: {e}")
+            return False
  
     def _generate_drum_env(self, mod_freq, frames, attack_ms, decay_ms, burst_len=1, burst_gap=1):
-        """Envelope with bursts: fast attack, exponential decay, retriggered at mod_freq beats/sec."""
+        """Envelope with bursts: fast attack, exponential decay"""
         dt = 1.0 / RATE
         t = np.arange(frames, dtype=np.float32) * dt
-
         period = 1.0 / max(mod_freq, 0.1)
-
         phi0 = self.mod_phase_accum
         phi = phi0 + t
         self.mod_phase_accum = (phi0 + frames * dt) % period
-
         beat_time = (phi % period)
         beat_index = np.floor((phi0 + t) / period).astype(int)
-
-        # Envelope params
         attack_t = attack_ms
         decay_tau = decay_ms / 5.0
-
         env = np.zeros_like(beat_time)
         for i, (bt, bi) in enumerate(zip(beat_time, beat_index)):
-            # Only allow envelope if this beat is inside the burst window
             if (bi % (burst_len + burst_gap)) < burst_len:
                 if bt < attack_t:
                     env[i] = bt / attack_t
@@ -275,191 +267,193 @@ class SineRowPlayer:
         return env
      
     def _generate_therapy_audio(self, frames):
-        """Generate therapy audio - extracted from _callback method"""
+        """Generate therapy audio - BT read happens first for consistent timing"""
         try:
-            # Handle pause request
-            if self.pause_requested and not self.is_paused:
-                # Check if fade-out is complete using samples remaining
-                if (self.fade_direction == -1 and self.fade_samples_remaining <= 0) or self.fade_multiplier <= 0.001:               
-                    # Fade-out complete, now pause
-                    self.saved_state = self.save_current_state()
-                    self.is_paused = True
-                    self.pause_requested = False
-
-                    # Tell clients the exact resume point
-                    if self.ws_handler and self.saved_state:
-                        try:
-                            self.ws_handler.send_treatment_state(self.saved_state)
-                        except Exception:
-                            pass
-
-                    # Notify WebSocket handler
-                    if self.ws_handler:
-                        self.ws_handler.send_pause_complete()
-                    
-                    print("[PAUSE] Paused - audio generation stopped")
-                    return np.zeros((frames, CHANNELS), dtype=np.float32)
-            
-            # Handle resume request
-            if self.resume_requested:
-                if self.restore_state(self.saved_state):
-                    self.resume_requested = False
-                    # Notify WebSocket handler
-                    if self.ws_handler:
-                        self.ws_handler.send_resume_complete()
-                    print("[RESUME] Resume successful, continuing audio generation")
-                else:
-                    print("[RESUME] Failed to restore state")
-                    self.resume_requested = False
-                    return np.zeros((frames, CHANNELS), dtype=np.float32)
-            
-            # If paused, return silence
-            if self.is_paused:
-                return np.zeros((frames, CHANNELS), dtype=np.float32)
+            # ---- Read BT audio FIRST before any therapy processing ----
+            bt_stereo = np.zeros((frames, 2), dtype=np.float32)
+            if self.bt_enabled:
+                bt_stereo = self._read_bt_from_ring(frames)
             
             # Initialize therapy signal
             therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
             
-            # Generate therapy audio if active
-            row = self.row
-            if row:
-                dt = 1.0 / RATE
-                tt_block = np.arange(frames) * dt
-
-                # Row parameters (use snapshot)
-                f0       = float(row.get("frequency", 20.0))
-                fsweep   = float(row.get("freqSweep", 0))
-                sspd     = float(row.get("sweepSpeed", 0))
-                dur      = float(row.get("time", 60))
-                phase    = float(row.get("phase", 90))
-                mode     = int(row.get("mode", 0))
-
-                # Logarithmic mapping for modulation frequency
-                mod_val  = float(row.get("modSpeed", 5))  # slider value 1100
-                f_min, f_max, N = 0.5, 6.0, 100
-                mod_freq = f_min * (f_max / f_min) ** ((mod_val - 1) / (N - 1))
-
-                # Burst grouping logic only used in drum modes
-                if mode in (8, 9):
-                    burst_len = max(1, int(round(phase / 22.5)))  # map 090° to 14 thumps
-                    burst_gap = 1
-                else:
-                    burst_len = None
-                    burst_gap = None
-                    
-                # Calculate time since current row started
-                current_time = time.perf_counter()
-                t0 = current_time - self.row_start_time
-
-                # Start fade-out when we're FADE_TIME seconds before the end
-                fade_start_time = dur - FADE_TIME
-                if t0 >= fade_start_time and self.fade_direction == 0 and dur > FADE_TIME and not self.pause_requested:
-                    print(f"[FADE] Starting fade-out at t={t0:.2f}s (fade_start={fade_start_time:.2f}s)")
-                    self._start_fade_out()
-
-                # Check for row completion - only after the full duration INCLUDING fade time
-                if t0 >= dur:
-                    if self.is_playing_sequence:
-                        next_index = self.current_row_index + 1
-                        if next_index < len(self.sequence_rows):
-                            print(f"[SEQ] Transitioning from row {self.current_row_index} to {next_index} at t={t0:.2f}s")
-                            self._start_sequence_row(next_index)
-                            # Recalculate for new row
-                            t0 = current_time - self.row_start_time
-                        else:
-                            print("[SEQ] Sequence complete")
-                            if self.ws_handler:
-                                self.ws_handler.queue_clear_highlight()
-                            self.row = None
-                            self.is_playing_sequence = False
-                            self.sequence_rows = None
-                            self._reset_state()
-                            return np.zeros((frames, CHANNELS), dtype=np.float32)
+            # WiFi streaming mode - use external audio
+            if self.wifi_stream_enabled:
+                try:
+                    wifi_data = self.wifi_audio_queue.get(timeout=0.001)
+                    if len(wifi_data) == frames * CHANNELS:
+                        therapy_signal = wifi_data.reshape((frames, CHANNELS))
                     else:
-                        print("[PLAY] Single row complete")
-                        self.row = None
-                        self._reset_state()
-                        return np.zeros((frames, CHANNELS), dtype=np.float32)
-
-                # For audio generation during fade-out period, clamp to duration
-                # This ensures consistent sine wave timing during the fade
-                audio_t0 = min(t0, dur)
-
-                # Generate carriers
-                audio_outputs = self._generate_4_channel_audio(f0, fsweep, sspd, audio_t0, tt_block, phase, frames)
-
-                # Modulation
-                if mode in (8, 9) and mod_freq > 0:
-                    # Drum modes (tight / boomy thumps)
-                    if mode == 8:  # Tight kick
-                        amp_env = self._generate_drum_env(mod_freq, frames,
-                                                          attack_ms=0.005, decay_ms=0.100,
-                                                          burst_len=burst_len, burst_gap=burst_gap)
-                    else:  # mode == 9: Boomy thump
-                        amp_env = self._generate_drum_env(mod_freq, frames,
-                                                          attack_ms=0.015, decay_ms=0.400,
-                                                          burst_len=burst_len, burst_gap=burst_gap)
-
-                    modulated_outputs = audio_outputs * amp_env[:, None]
-
-                elif mode == 10 and mod_freq > 0:
-                    # Heartbeat mode: "TADAM"
-                    bpm = int(mod_freq * 60)  # map Hz -> BPM
-                    amp_env = self._generate_heartbeat_env(frames, bpm=bpm, ratio=0.25)
-                    modulated_outputs = audio_outputs * amp_env[:, None]
-
-                elif mod_freq > 0:
-                    # Sine LFO modulation
-                    w = 2 * np.pi * mod_freq
-                    phi0 = self.mod_phase_accum
-                    k = np.arange(frames, dtype=np.float32)
-                    mod_phi = phi0 + w * dt * k
-                    self.mod_phase_accum = (phi0 + w * dt * frames) % (2*np.pi)
-
-                    mod_lfo = np.sin(mod_phi)
-                    amp_env = (mod_lfo + 1.0) * 0.5
-                    modulated_outputs = audio_outputs * amp_env[:, None]
-
-                else:
-                    modulated_outputs = audio_outputs
-
-                # Route to speakers
-                if mode in (8, 9, 10):
-                    # Use base routing (mode 0) so all 4 carriers are mapped to body zones
-                    speaker_signals = self._route_audio_to_speakers(modulated_outputs, 0)
-                else:
-                    speaker_signals = self._route_audio_to_speakers(modulated_outputs, mode)
-
-                # Per-speaker gains with dual scaling and fallback
-                matrix_master = int(row.get("strength", 5))
-                user_master   = getattr(self, "user_strength", None)
-                final_master  = apply_dual_strength(matrix_master, 
-                                                    int(user_master) if user_master is not None else None)
-
-                base_gains = np.zeros(CHANNELS, dtype=np.float32)
-                for col, chans in CHANNEL_MAP.items():
-                    matrix_trim = int(row.get(col, 5))
-                    user_trim = getattr(self, f"user_{col}", None)
-                    final_trim  = apply_dual_strength(matrix_trim, 
-                                                      int(user_trim) if user_trim is not None else None)
-                    g = scaled_amp(final_master, final_trim)
-                    for c in chans:
-                        base_gains[c] = g
-
-                therapy_signal = speaker_signals * base_gains[None, :]
-
-                # Apply fade
-                therapy_signal = self._apply_fade(therapy_signal, frames)
-
-            # ---- BT path: stereo capture -> 200 Hz LPF -> mono/stereo -> 8ch ----
-            bt_8 = None
-            if self.bt_gain > 0.0 and self.bt_enabled and self.bt_input:
-                bt_stereo = self._read_bt_stereo(frames)   # (N,2) or silence
-                bt_8 = self._bt_to_8ch(bt_stereo)          # (N,8)
+                        print(f"[WIFI] Size mismatch: expected {frames*CHANNELS}, got {len(wifi_data)}")
+                        self.wifi_stream_underruns += 1
+                except queue.Empty:
+                    self.wifi_stream_underruns += 1
+                    if self.wifi_stream_underruns % 100 == 0:
+                        print(f"[WIFI] Underruns: {self.wifi_stream_underruns}")
             else:
-                bt_8 = None
+                # Normal therapy generation
+                if self.pause_requested and not self.is_paused:
+                    if (self.fade_direction == -1 and self.fade_samples_remaining <= 0) or self.fade_multiplier <= 0.001:               
+                        self.saved_state = self.save_current_state()
+                        self.is_paused = True
+                        self.pause_requested = False
+                        if self.ws_handler and self.saved_state:
+                            try:
+                                self.ws_handler.send_treatment_state(self.saved_state)
+                            except Exception:
+                                pass
+                        if self.ws_handler:
+                            self.ws_handler.send_pause_complete()
+                        print("[PAUSE] Paused - therapy stopped, BT continues")
+                            
+                # Handle resume request
+                if self.resume_requested:
+                    if self.restore_state(self.saved_state):
+                        self.resume_requested = False
+                        if self.ws_handler:
+                            self.ws_handler.send_resume_complete()
+                        print("[RESUME] Resume successful")
+                    else:
+                        print("[RESUME] Failed to restore state")
+                        self.resume_requested = False
+                
+                # Initialize signals
+                therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
+                
+                # Generate therapy audio ONLY if active and not paused
+                row = self.row
+                if row and not self.is_paused:
+                    dt = 1.0 / RATE
+                    tt_block = np.arange(frames) * dt
+                    f0 = float(row.get("frequency", 20.0))
+                    fsweep = float(row.get("freqSweep", 0))
+                    sspd = float(row.get("sweepSpeed", 0))
+                    dur = float(row.get("time", 60))
+                    phase = float(row.get("phase", 90))  # This now controls MODULATION phase
+                    mode = int(row.get("mode", 0))
+                    mod_val = float(row.get("modSpeed", 5))
+                    
+                    # Logarithmic mapping: slider 1–100 → 0.03–10 Hz
+                    f_min, f_max, N = 0.03, 10.0, 100
+                    mod_freq = f_min * (f_max / f_min) ** ((mod_val - 1) / (N - 1))
+                    
+                    if mode in (8, 9):
+                        burst_len = max(1, int(round(phase / 22.5)))
+                        burst_gap = 1
+                    else:
+                        burst_len = None
+                        burst_gap = None
+                        
+                    current_time = time.perf_counter()
+                    t0 = current_time - self.row_start_time
+                    fade_start_time = dur - FADE_TIME
+                    
+                    if t0 >= fade_start_time and self.fade_direction == 0 and dur > FADE_TIME and not self.pause_requested:
+                        print(f"[FADE] Starting fade-out at t={t0:.2f}s")
+                        self._start_fade_out()
 
-            # ---- Single last-stage mixer ----
+                    if t0 >= dur:
+                        if self.is_playing_sequence:
+                            next_index = self.current_row_index + 1
+                            if next_index < len(self.sequence_rows):
+                                print(f"[SEQ] Transitioning from row {self.current_row_index} to {next_index}")
+                                self._start_sequence_row(next_index)
+                                t0 = current_time - self.row_start_time
+                            else:
+                                print("[SEQ] Sequence complete")
+                                if self.ws_handler:
+                                    self.ws_handler.queue_clear_highlight()
+                                self.row = None
+                                self.is_playing_sequence = False
+                                self.sequence_rows = None
+                                self._reset_state()
+                        else:
+                            print("[PLAY] Single row complete")
+                            self.row = None
+                            self._reset_state()
+
+                    # Only generate therapy if we still have an active row
+                    if self.row:
+                        audio_t0 = min(t0, dur)
+                        
+                        # Generate 4-channel audio (carriers without phase offset)
+                        audio_outputs = self._generate_4_channel_audio(f0, fsweep, sspd, audio_t0, tt_block, frames)
+
+                        # Apply modulation with phase control
+                        if mode in (8, 9) and mod_freq > 0:
+                            if mode == 8:
+                                amp_env = self._generate_drum_env(mod_freq, frames, attack_ms=0.005, decay_ms=0.100,
+                                                                  burst_len=burst_len, burst_gap=burst_gap)
+                            else:
+                                amp_env = self._generate_drum_env(mod_freq, frames, attack_ms=0.015, decay_ms=0.400,
+                                                                  burst_len=burst_len, burst_gap=burst_gap)
+                            # Apply phase offset to each of the 4 outputs
+                            modulated_outputs = np.zeros_like(audio_outputs)
+                            for output_idx in range(4):
+                                phase_offset_deg = phase * output_idx
+                                phase_offset_samples = int((phase_offset_deg / 360.0) * (1.0 / mod_freq) * RATE)
+                                shifted_env = np.roll(amp_env, phase_offset_samples)
+                                modulated_outputs[:, output_idx] = audio_outputs[:, output_idx] * shifted_env
+                                
+                        elif mode == 10 and mod_freq > 0:
+                            bpm = int(mod_freq * 60)
+                            amp_env = self._generate_heartbeat_env(frames, bpm=bpm, ratio=0.25)
+                            # Apply phase offset to each of the 4 outputs
+                            modulated_outputs = np.zeros_like(audio_outputs)
+                            for output_idx in range(4):
+                                phase_offset_deg = phase * output_idx
+                                phase_offset_samples = int((phase_offset_deg / 360.0) * (60.0 / bpm) * RATE)
+                                shifted_env = np.roll(amp_env, phase_offset_samples)
+                                modulated_outputs[:, output_idx] = audio_outputs[:, output_idx] * shifted_env
+                                
+                        elif mod_freq > 0:
+                            # Sine wave modulation with phase control
+                            w = 2 * np.pi * mod_freq
+                            phi0 = self.mod_phase_accum
+                            k = np.arange(frames, dtype=np.float32)
+                            
+                            modulated_outputs = np.zeros_like(audio_outputs)
+                            for output_idx in range(4):
+                                # Apply phase offset to modulation for each output
+                                phase_offset_rad = np.deg2rad(phase * output_idx)
+                                mod_phi = phi0 + w * dt * k + phase_offset_rad
+                                mod_lfo = np.sin(mod_phi)
+                                amp_env = (mod_lfo + 1.0) * 0.5
+                                modulated_outputs[:, output_idx] = audio_outputs[:, output_idx] * amp_env
+                            
+                            self.mod_phase_accum = (phi0 + w * dt * frames) % (2*np.pi)
+                        else:
+                            modulated_outputs = audio_outputs
+
+                        if mode in (8, 9, 10):
+                            speaker_signals = self._route_audio_to_speakers(modulated_outputs, 0)
+                        else:
+                            speaker_signals = self._route_audio_to_speakers(modulated_outputs, mode)
+
+                        matrix_master = int(row.get("strength", 5))
+                        user_master = getattr(self, "user_strength", None)
+                        final_master = apply_dual_strength(matrix_master, 
+                                                            int(user_master) if user_master is not None else None)
+
+                        base_gains = np.zeros(CHANNELS, dtype=np.float32)
+                        for col, chans in CHANNEL_MAP.items():
+                            matrix_trim = int(row.get(col, 5))
+                            user_trim = getattr(self, f"user_{col}", None)
+                            final_trim = apply_dual_strength(matrix_trim, 
+                                                              int(user_trim) if user_trim is not None else None)
+                            g = scaled_amp(final_master, final_trim)
+                            for c in chans:
+                                base_gains[c] = g
+
+                        therapy_signal = speaker_signals * base_gains[None, :]
+                        therapy_signal = self._apply_fade(therapy_signal, frames)
+
+            # ---- BT audio processing (already read at start) ----
+            bt_8 = None
+            if self.bt_gain > 0.0:
+                bt_8 = self._bt_to_8ch(bt_stereo)
+
+            # Mix therapy + BT
             music_gain = float(self.bt_gain)
             therapy_mix_gain = float(getattr(self, "therapy_gain", 1.0))
             if bt_8 is not None:
@@ -467,42 +461,23 @@ class SineRowPlayer:
             else:
                 mixed_signal = therapy_signal * therapy_mix_gain
             
-            # Clip and return
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
             return mixed_signal
             
         except Exception as e:
             print(f"[AUDIO] Generation error: {e}")
             return np.zeros((frames, CHANNELS), dtype=np.float32)
-  
-    def _design_biquad_lowpass(self, fc, fs, Q=0.7071):
-        """Cookbook biquad LPF (RBJ) ? returns normalized (b0,b1,b2,a1,a2)."""
-        w0 = 2.0 * np.pi * float(fc) / float(fs)
-        alpha = np.sin(w0) / (2.0 * float(Q))
-        cosw0 = np.cos(w0)
-
-        b0 = (1.0 - cosw0) * 0.5
-        b1 = 1.0 - cosw0
-        b2 = (1.0 - cosw0) * 0.5
-        a0 = 1.0 + alpha
-        a1 = -2.0 * cosw0
-        a2 = 1.0 - alpha
-
-        # normalize
-        return (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
-        
-    def _init_alsa_output(self):
+ 
+    def _generate_heartbeat_env(self, frames, bpm=60, ratio=0.25):
         try:
+            # If ALSA output is already running, don't restart it
             if hasattr(self, '_alsa_process') and self._alsa_process:
-                try:
-                    self._alsa_process.terminate()
-                    self._alsa_process.wait(timeout=1)
-                except:
-                    pass
+                if self._alsa_process.poll() is None:  # Still running
+                    print(f"[ALSA] Output already active, reusing existing process")
+                    return True
 
-            # Use stable ALSA card name for ICUSBAUDIO7D
+            # Only start new process if needed
             alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
-
             self._alsa_process = subprocess.Popen([
                 'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
@@ -522,125 +497,208 @@ class SineRowPlayer:
             return False
 
     def _biquad_process_stereo(self, x_stereo, coeffs, state):
-        """Process 2-ch block with a single biquad, transposed direct-form II."""
+        """Process 2-ch block with biquad filter - OPTIMIZED vectorized version"""
         if coeffs is None:
             return x_stereo
+        
         b0, b1, b2, a1, a2 = coeffs
+        frames = x_stereo.shape[0]
         y = np.empty_like(x_stereo, dtype=np.float32)
-        # state: shape (2,2) [[z1L,z2L],[z1R,z2R]]
+        
+        # Process both channels using vectorized operations
         for ch in (0, 1):
             z1, z2 = float(state[ch, 0]), float(state[ch, 1])
-            xs = x_stereo[:, ch].astype(np.float32, copy=False)
-            ys = np.empty_like(xs, dtype=np.float32)
-            for n in range(xs.shape[0]):
-                v = xs[n] - a1 * z1 - a2 * z2
-                out = b0 * v + b1 * z1 + b2 * z2
-                ys[n] = out
-                z2 = z1
-                z1 = v
+            xs = x_stereo[:, ch]
+            ys = np.empty(frames, dtype=np.float32)
+            
+            # Vectorized biquad using scipy.signal approach
+            # Direct Form II transposed
+            for i in range(frames):
+                ys[i] = b0 * xs[i] + z1
+                z1 = b1 * xs[i] - a1 * ys[i] + z2
+                z2 = b2 * xs[i] - a2 * ys[i]
+            
             state[ch, 0], state[ch, 1] = z1, z2
             y[:, ch] = ys
+        
         return y
 
-    def _read_bt_stereo(self, frames):
-        """Return (frames,2) float32 in [-1,1] at RATE; silence if BT off/unavailable.
-           Auto-recovers if BlueALSA goes silent or the device disappears."""
-        if not self.bt_enabled or not self.bt_input:
-            self._bt_zero_blocks = 0
-            return np.zeros((frames, 2), dtype=np.float32)
-
-        try:
-            length, data = self.bt_input.read()
-
-            # Fast path: device disappeared (BlueALSA closed the source)
-            if length is None and data is None:
-                # Some pyalsaaudio builds return (None, None) on ENODEV; treat as error
-                raise RuntimeError("bluealsa read returned (None, None)")
-
-            if length <= 0 or not data:
-                # empty read: count it and maybe recycle after ~3s
-                self._bt_zero_blocks += 1
-                if self._bt_zero_blocks >= self._bt_zero_limit:
-                    now = time.monotonic()
-                    if (now - self._bt_last_reinit) >= self._bt_reinit_cooldown_s:
-                        print("[BT] Watchdog: BlueALSA silent ~3s - recycling capture")
-                        try:
-                            self.bt_input.close()
-                        except Exception:
-                            pass
-                        self.bt_input = None
-                        self.bt_enabled = False
-                        self.bt_mac_current = None
-                        self._bt_last_reinit = now
-                return np.zeros((frames, 2), dtype=np.float32)
-
-            # got data => reset watchdog
-            self._bt_zero_blocks = 0
-
-            s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
-            if s.size < 2:
-                return np.zeros((frames, 2), dtype=np.float32)
-
-            st = s.reshape(-1, 2)
-            n = st.shape[0]
-            if n < frames:
-                pad = np.zeros((frames - n, 2), dtype=np.float32)
-                st = np.vstack([st, pad])
-            elif n > frames:
-                st = st[:frames, :]
-            return st
-
-        except Exception as e:
-            # If the device is gone, recycle immediately (no 3s wait)
-            txt = str(e)
-            if "No such device" in txt or "ENODEV" in txt or "disconnected" in txt.lower():
-                now = time.monotonic()
-                if (now - self._bt_last_reinit) >= self._bt_reinit_cooldown_s:
-                    print("[BT] Device gone - recycling capture now")
+    def _bt_read_loop(self):
+        """Background thread to continuously read BT audio into ring buffer"""
+        print("[BT] Read thread started")
+        consecutive_errors = 0
+        max_consecutive_errors = 50
+        empty_reads = 0
+        last_stats_time = time.perf_counter()
+        total_frames_read = 0
+        
+        while self.bt_read_running:
+            try:
+                if not self.bt_input or not self.bt_enabled:
+                    time.sleep(0.1)
+                    consecutive_errors = 0
+                    continue
+                
+                # Aggressive read loop - read multiple times per iteration
+                frames_read_this_iteration = 0
+                for _ in range(10):  # Try up to 10 reads per loop
                     try:
-                        self.bt_input.close()
-                    except Exception:
+                        length, data = self.bt_input.read()
+                        
+                        if length is None and data is None:
+                            raise RuntimeError("BT device disconnected")
+                        
+                        if length > 0 and data:
+                            consecutive_errors = 0
+                            empty_reads = 0
+                            samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
+                            
+                            if samples.size >= 2:
+                                stereo = samples.reshape(-1, 2)
+                                total_frames_read += len(stereo)
+                                frames_read_this_iteration += len(stereo)
+                                
+                                # Write to ring buffer
+                                with self.bt_ring_lock:
+                                    for frame in stereo:
+                                        if self.bt_ring_fill < self.bt_ring_buffer.shape[0]:
+                                            self.bt_ring_buffer[self.bt_ring_write_pos] = frame
+                                            self.bt_ring_write_pos = (self.bt_ring_write_pos + 1) % self.bt_ring_buffer.shape[0]
+                                            self.bt_ring_fill += 1
+                                        else:
+                                            # Buffer full, skip oldest sample
+                                            self.bt_ring_read_pos = (self.bt_ring_read_pos + 1) % self.bt_ring_buffer.shape[0]
+                                            self.bt_ring_buffer[self.bt_ring_write_pos] = frame
+                                            self.bt_ring_write_pos = (self.bt_ring_write_pos + 1) % self.bt_ring_buffer.shape[0]
+                        else:
+                            # No more data available right now
+                            break
+                    except Exception as read_err:
+                        # Non-blocking read will raise exception when no data
+                        break
+                
+                # Stats every 4 seconds
+                now = time.perf_counter()
+                if now - last_stats_time >= 4.0:
+                    with self.bt_ring_lock:
+                        fill_pct = (self.bt_ring_fill / self.bt_ring_buffer.shape[0]) * 100
+                    print(f"[BT] Buffer: {fill_pct:.1f}% full ({self.bt_ring_fill}/{self.bt_ring_buffer.shape[0]}), read {total_frames_read} frames in 4s")
+                    last_stats_time = now
+                    total_frames_read = 0
+                
+                # Short sleep to prevent tight loop
+                time.sleep(0.005)  # 5ms sleep
+                    
+            except Exception as e:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"[BT] Too many consecutive errors ({consecutive_errors}), recycling connection")
+                    try:
+                        if self.bt_input:
+                            self.bt_input.close()
+                    except:
                         pass
                     self.bt_input = None
                     self.bt_enabled = False
                     self.bt_mac_current = None
-                    self._bt_last_reinit = now
-                # return silence until autoconnect re-establishes
-                return np.zeros((frames, 2), dtype=np.float32)
+                    self._bt_last_reinit = time.monotonic()
+                    consecutive_errors = 0
+                    time.sleep(2)
+                elif consecutive_errors % 10 == 0:
+                    print(f"[BT] Read error ({consecutive_errors}): {e}")
+                time.sleep(0.01)
+        
+        print("[BT] Read thread stopped")
 
-            # Other errors -> treat like silence and log occasionally
-            self._bt_zero_blocks += 1
-            if (self._bt_zero_blocks % 40) == 0:
-                print(f"[BT] Read error (count {self._bt_zero_blocks}): {e}")
-            return np.zeros((frames, 2), dtype=np.float32)
+    def _read_bt_from_ring(self, frames):
+        """Read audio from ring buffer - OPTIMIZED batch read"""
+        output = np.zeros((frames, 2), dtype=np.float32)
+        
+        with self.bt_ring_lock:
+            available = self.bt_ring_fill
+            to_read = min(frames, available)
+            
+            # Log underruns
+            if to_read < frames:
+                if not hasattr(self, '_underrun_count'):
+                    self._underrun_count = 0
+                    self._last_underrun_log = time.perf_counter()
+                self._underrun_count += 1
+                now = time.perf_counter()
+                if now - self._last_underrun_log >= 1.0:
+                    print(f"[BT] UNDERRUN: requested {frames}, only had {available} (count: {self._underrun_count})")
+                    self._last_underrun_log = now
+                    self._underrun_count = 0
+            
+            # Batch read - much faster than frame-by-frame
+            if to_read > 0:
+                space_until_wrap = self.bt_ring_buffer.shape[0] - self.bt_ring_read_pos
+                
+                if to_read <= space_until_wrap:
+                    # Can read all without wrapping
+                    output[:to_read] = self.bt_ring_buffer[self.bt_ring_read_pos:self.bt_ring_read_pos + to_read]
+                    self.bt_ring_read_pos = (self.bt_ring_read_pos + to_read) % self.bt_ring_buffer.shape[0]
+                else:
+                    # Need to wrap around
+                    output[:space_until_wrap] = self.bt_ring_buffer[self.bt_ring_read_pos:]
+                    remaining = to_read - space_until_wrap
+                    output[space_until_wrap:to_read] = self.bt_ring_buffer[:remaining]
+                    self.bt_ring_read_pos = remaining
+                
+                self.bt_ring_fill -= to_read
+        
+        return output
 
     def _bt_to_8ch(self, bt_stereo_block):
-        """LPF 200 Hz, then mono or stereo fan-out to 8 channels."""
-        # Lazy init/update LPF if needed
-        if self._bt_lpf_coeffs is None:
-            self._bt_lpf_coeffs = self._design_biquad_lowpass(self.bt_lpf_fc, RATE, Q=0.7071)
-
-        # 200 Hz LPF
-        bt_lp = self._biquad_process_stereo(bt_stereo_block, self._bt_lpf_coeffs, self._bt_lpf_state)
-
-        frames = bt_lp.shape[0]
-        out = np.zeros((frames, CHANNELS), dtype=np.float32)
-
-        if self.bt_mono:
-            mono = bt_lp.mean(axis=1, keepdims=True)  # (N,1)
-            out[:] = mono  # broadcast to all 8 channels
+        """200Hz lowpass then mono/stereo to 8ch - scipy or simple FIR fallback"""
+        frames = bt_stereo_block.shape[0]
+        
+        if SCIPY_AVAILABLE:
+            # Fast scipy Butterworth filter
+            if self._bt_lpf_sos is None:
+                self._bt_lpf_sos = scipy_signal.butter(4, self.bt_lpf_fc, 'low', fs=RATE, output='sos')
+                self._bt_lpf_zi = scipy_signal.sosfilt_zi(self._bt_lpf_sos)
+                self._bt_lpf_zi = np.stack([self._bt_lpf_zi, self._bt_lpf_zi])
+            
+            bt_filtered = np.empty_like(bt_stereo_block)
+            for ch in range(2):
+                bt_filtered[:, ch], self._bt_lpf_zi[ch] = scipy_signal.sosfilt(
+                    self._bt_lpf_sos, 
+                    bt_stereo_block[:, ch],
+                    zi=self._bt_lpf_zi[ch]
+                )
         else:
-            L = bt_lp[:, 0:1]  # (N,1)
-            R = bt_lp[:, 1:1+1]
-            # L ? ch 0,2,4,6 ; R ? ch 1,3,5,7
-            out[:, 0] = L[:, 0]
-            out[:, 2] = L[:, 0]
-            out[:, 4] = L[:, 0]
-            out[:, 6] = L[:, 0]
-            out[:, 1] = R[:, 0]
-            out[:, 3] = R[:, 0]
-            out[:, 5] = R[:, 0]
-            out[:, 7] = R[:, 0]
+            # Simple 5-tap FIR lowpass (fast, reasonable quality)
+            # Approximates 200Hz cutoff at 48kHz
+            if not hasattr(self, '_fir_buffer'):
+                self._fir_buffer = np.zeros((2, 4), dtype=np.float32)
+            
+            bt_filtered = np.empty_like(bt_stereo_block)
+            # Simple moving average-ish coefficients
+            h = np.array([0.1, 0.2, 0.4, 0.2, 0.1], dtype=np.float32)
+            
+            for ch in range(2):
+                signal_in = bt_stereo_block[:, ch]
+                signal_out = np.zeros(frames, dtype=np.float32)
+                
+                # Use numpy convolve for speed
+                padded = np.concatenate([self._fir_buffer[ch], signal_in])
+                filtered = np.convolve(padded, h, mode='valid')
+                signal_out = filtered[:frames]
+                
+                # Save last 4 samples for next block
+                self._fir_buffer[ch] = signal_in[-4:]
+                bt_filtered[:, ch] = signal_out
+        
+        out = np.zeros((frames, CHANNELS), dtype=np.float32)
+        
+        if self.bt_mono:
+            mono = (bt_filtered[:, 0] + bt_filtered[:, 1]) * 0.5
+            out[:] = mono[:, np.newaxis]
+        else:
+            out[:, 0::2] = bt_filtered[:, 0:1]
+            out[:, 1::2] = bt_filtered[:, 1:2]
+        
         return out
 
     def is_device_available(self) -> bool:
@@ -648,7 +706,6 @@ class SineRowPlayer:
             target = getattr(self, "output_device_hint", DEVICE_NAME)
             for dev in sd.query_devices():
                 if target in dev["name"]:
-                    # For ICUSBAUDIO7D, accept any channel count since sounddevice detection is unreliable
                     if "ICUSBAUDIO7D" in target:
                         return True
                     elif dev["max_output_channels"] >= CHANNELS:
@@ -657,184 +714,142 @@ class SineRowPlayer:
             print(f"[!] Error querying devices: {e}")
         return False
 
-    def _list_output_devices(self):
-        """Return a list of (index, name, max_out) for all output devices."""
-        out = []
-        try:
-            for i, dev in enumerate(sd.query_devices()):
-                max_out = int(dev.get("max_output_channels", 0) or 0)
-                name = str(dev.get("name", ""))
-                if max_out > 0:
-                    out.append((i, name, max_out))
-        except Exception as e:
-            print(f"[!] Error listing devices: {e}")
-        return out
-
-    def _find_best_8ch_device(self, hint="ICUSBAUDIO7D"):
-        """Pick the ICUSBAUDIO7D (or hint) device advertising >=8 outputs.
-        If multiple, choose the one with the largest channel count.
-        Returns (index, name, max_out) or (None, None, 0)."""
-        candidates = []
-        for i, name, max_out in self._list_output_devices():
-            if hint in name and max_out >= 8:
-                candidates.append((i, name, max_out))
-        if not candidates:
-            # As a fallback, accept any device (not just hint) with >=8 outputs
-            for i, name, max_out in self._list_output_devices():
-                if max_out >= 8:
-                    candidates.append((i, name, max_out))
-        if not candidates:
-            return None, None, 0
-        # Prefer the highest channel count, then shortest name (tie-break), then lowest index
-        candidates.sort(key=lambda t: (-t[2], len(t[1]), t[0]))
-        return candidates[0]
-
     def _setup_bluetooth_input(self, bt_mac):
-        """Setup Bluetooth input.
-
-        Strategy:
-        1) Try direct BlueALSA CAPTURE once (will often be unavailable or busy for A2DP sinks).
-        2) If /proc/asound/Loopback exists, start bluealsa-aplay ? plughw:Loopback,0 and capture from hw:Loopback,1,0.
-        3) If loopback does not exist (no permission to load), cleanly disable BT capture so therapy runs unaffected.
-        """
+        """Setup Bluetooth input with ring buffer"""
         if not ALSA_AVAILABLE:
-            print("[BT] ALSA not available - cannot setup Bluetooth input")
+            print("[BT] ALSA not available")
             return False
 
-        # Close any previous capture
+        # Stop existing read thread
+        if self.bt_read_running:
+            self.bt_read_running = False
+            if self.bt_read_thread:
+                self.bt_read_thread.join(timeout=2)
+
+        # Close previous input
         try:
             if self.bt_input:
-                try:
-                    self.bt_input.close()
-                except:
-                    pass
+                self.bt_input.close()
             self.bt_input = None
         except Exception:
             pass
 
-        # Kill any previous bluealsa-aplay we may have spawned for this MAC
+        # Kill previous bluealsa-aplay
         try:
             subprocess.run(["pkill", "-f", f"bluealsa-aplay.*{bt_mac}"], check=False)
         except Exception:
             pass
 
-        # --- Attempt direct BlueALSA capture (A2DP sinks are often not capturable) ---
+        # Try direct BlueALSA capture with NON-BLOCKING mode
         pcm_device = f"bluealsa:DEV={bt_mac},PROFILE=a2dp"
         print(f"[BT] Attempting to open {pcm_device}")
         try:
             cap = alsaaudio.PCM(
                 type=alsaaudio.PCM_CAPTURE,
-                mode=alsaaudio.PCM_NONBLOCK,   # non-blocking read loop
+                mode=alsaaudio.PCM_NONBLOCK,  # NON-BLOCKING for continuous reads
                 device=pcm_device,
                 channels=2,
-                rate=RATE,                     # match your 48k pipeline
+                rate=RATE,
                 format=alsaaudio.PCM_FORMAT_S16_LE,
                 periodsize=BLOCK
             )
             self.bt_input = cap
             self.bt_mac_current = bt_mac
             self.bt_enabled = True
+            
+            # Clear ring buffer
+            with self.bt_ring_lock:
+                self.bt_ring_write_pos = 0
+                self.bt_ring_read_pos = 0
+                self.bt_ring_fill = 0
+            
+            # Start read thread
+            self.bt_read_running = True
+            self.bt_read_thread = threading.Thread(target=self._bt_read_loop, daemon=True)
+            self.bt_read_thread.start()
+            
             print(f"[BT] Direct BlueALSA CAPTURE established for {bt_mac}")
             return True
+            
         except Exception as direct_err:
-            print(f"[BT] Direct CAPTURE not available ({direct_err}); evaluating Loopback fallback...")
+            print(f"[BT] Direct CAPTURE not available ({direct_err}); trying Loopback")
 
-        # --- Loopback fallback only if the device already exists (no modprobe here) ---
+        # Loopback fallback
         if not os.path.exists("/proc/asound/Loopback"):
-            print("[BT] Loopback device not present; skipping BT capture (therapy continues).")
+            print("[BT] Loopback device not present")
             self.bt_input = None
             self.bt_enabled = False
             return False
 
-        # Start bridge writer
         try:
             self._ba_proc = subprocess.Popen(
-                ["bluealsa-aplay",
-                 "-r", "48000",
-                 "-d", "plughw:Loopback,0",
-                 bt_mac],
+                ["bluealsa-aplay", "-r", "48000", "-d", "plughw:Loopback,0", bt_mac],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.STDOUT
             )
-            print("[BT] Started bluealsa-aplay ? plughw:Loopback,0 @48k")
+            print("[BT] Started bluealsa-aplay → plughw:Loopback,0 @48k")
         except Exception as e:
             print(f"[BT] Failed to start bluealsa-aplay: {e}")
 
-        # Open mirror capture side
         loop_dev = "hw:Loopback,1,0"
         for _ in range(10):
             try:
-                cap = alsaaudio.PCM(alsaaudio.PCM_CAPTURE, device=loop_dev)
-                cap.setchannels(2)
-                cap.setrate(48000)
-                cap.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-                cap.setperiodsize(BLOCK)
+                cap = alsaaudio.PCM(
+                    type=alsaaudio.PCM_CAPTURE,
+                    mode=alsaaudio.PCM_NONBLOCK,  # NON-BLOCKING
+                    device=loop_dev,
+                    channels=2,
+                    rate=48000,
+                    format=alsaaudio.PCM_FORMAT_S16_LE,
+                    periodsize=BLOCK
+                )
                 self.bt_input = cap
                 self.bt_mac_current = bt_mac
                 self.bt_enabled = True
+                
+                # Clear ring buffer
+                with self.bt_ring_lock:
+                    self.bt_ring_write_pos = 0
+                    self.bt_ring_read_pos = 0
+                    self.bt_ring_fill = 0
+                
+                # Start read thread
+                self.bt_read_running = True
+                self.bt_read_thread = threading.Thread(target=self._bt_read_loop, daemon=True)
+                self.bt_read_thread.start()
+                
                 print(f"[BT] Loopback capture established on {loop_dev}")
                 return True
             except Exception:
                 time.sleep(0.1)
 
-        print("[BT] Loopback capture failed to initialize")
+        print("[BT] Loopback capture failed")
         self.bt_input = None
         self.bt_enabled = False
         return False
 
-    def _read_bluetooth_audio(self, frames):
-        """Read Bluetooth audio and convert stereo to 8ch. Return None if BT off."""
-        if not getattr(self, "bt_input", None) or not getattr(self, "bt_enabled", False):
-            return None
-        try:
-            # Non-blocking read
-            length, data = self.bt_input.read()
-            if length <= 0 or not data:
-                # Return silence frame-shaped to keep mixer stable
-                return np.zeros((frames, CHANNELS), dtype=np.float32)
-
-            # 16-bit little-endian PCM ? float32 [-1..1]
-            bt_samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32767.0
-
-            # Reshape to stereo
-            if bt_samples.size < 2:
-                return np.zeros((frames, CHANNELS), dtype=np.float32)
-            bt_stereo = bt_samples.reshape(-1, 2)
-
-            # Fit length to frames (pad or trim)
-            n = bt_stereo.shape[0]
-            if n < frames:
-                pad = np.zeros((frames - n, 2), dtype=np.float32)
-                bt_stereo = np.vstack([bt_stereo, pad])
-            elif n > frames:
-                bt_stereo = bt_stereo[:frames, :]
-
-            # Expand to 8ch by distributing L/R
-            out = np.zeros((frames, CHANNELS), dtype=np.float32)
-            for ch in range(CHANNELS):
-                out[:, ch] = bt_stereo[:, ch % 2]
-            return out
-
-        except Exception as e:
-            # Log once in a while but don't break therapy
-            if not hasattr(self, "_bt_err_count"):
-                self._bt_err_count = 0
-            self._bt_err_count += 1
-            if self._bt_err_count % 50 == 1:
-                print(f"[BT] Audio read error: {e}")
-            # Return silence so therapy continues
-            return np.zeros((frames, CHANNELS), dtype=np.float32)
-
     def ensure_stream(self):
         try:
             if not self._init_alsa_output():
-                print("[!] Failed to initialize ALSA output (no DAC found?)")
+                print("[!] Failed to initialize ALSA output")
                 return False
 
+            # Check if audio loop is already running
             if getattr(self, '_audio_running', False):
-                return True  # Already running
+                # Audio loop already running
+                # Check if BT thread needs restart (after stop was called)
+                if self.bt_enabled and self.bt_input and not self.bt_read_running:
+                    print("[BT] Restarting read thread")
+                    with self.bt_ring_lock:
+                        self.bt_ring_write_pos = 0
+                        self.bt_ring_read_pos = 0
+                        self.bt_ring_fill = 0
+                    self.bt_read_running = True
+                    self.bt_read_thread = threading.Thread(target=self._bt_read_loop, daemon=True)
+                    self.bt_read_thread.start()
+                return True
 
-            # Start pure threading approach (no sounddevice dependency)
+            # Start audio loop for the first time
             self._audio_running = True
             self._audio_thread = threading.Thread(
                 target=self._pure_audio_loop,
@@ -842,7 +857,7 @@ class SineRowPlayer:
             )
             self._audio_thread.start()
 
-            print("[+] ALSA output and threading initialized")
+            print("[+] ALSA output and audio loop initialized")
             return True
 
         except Exception as e:
@@ -880,7 +895,7 @@ class SineRowPlayer:
             return
         self.current_row_index = index
         self.row = self.sequence_rows[index]
-        self.row_start_time = time.perf_counter()  # Reset timing for new row
+        self.row_start_time = time.perf_counter()
         self.phase_accum = 0.0
         self.mod_phase_accum = 0.0
         self.last_inst_f = float(self.row.get("frequency", 20.0))
@@ -906,44 +921,24 @@ class SineRowPlayer:
             off += n
 
     def stop(self):
-        print("[STOP] Stopping audio system")
+        print("[STOP] Stopping therapy playback (BT audio continues)")
         
-        # Reset pause state
+        # DON'T stop BT read thread - keep it running for continuous music
+        # DON'T stop audio loop - keep it running for continuous BT audio output
+        
+        # Reset pause/playback state
         self.is_paused = False
         self.pause_requested = False
         self.resume_requested = False
         self.saved_state = None
         
-        # Reset audio state
+        # Clear therapy state only
         self.row = None
         self.is_playing_sequence = False
         self.sequence_rows = None
         self._reset_state()
         
-        # Stop the audio loop
-        if hasattr(self, '_audio_running'):
-            self._audio_running = False
-        
-        # Close ALSA pipe safely
-        try:
-            if hasattr(self, "_alsa_process") and self._alsa_process:
-                if self._alsa_process.poll() is None:  # Process is still running
-                    try:
-                        self._alsa_process.stdin.close()
-                    except Exception:
-                        pass
-                    try:
-                        self._alsa_process.terminate()
-                        self._alsa_process.wait(timeout=2)
-                    except Exception:
-                        try:
-                            self._alsa_process.kill()
-                            self._alsa_process.wait(timeout=1)
-                        except Exception:
-                            pass
-                self._alsa_process = None
-        except Exception as e:
-            print(f"[STOP] Error cleaning up ALSA: {e}")
+        # Keep ALSA output and BT running - only stop therapy signal generation
           
     def _start_fade_in(self):
         self.fade_samples_remaining = FADE_SAMPLES
@@ -981,7 +976,6 @@ class SineRowPlayer:
                 elif self.fade_direction == -1:
                     self.fade_multiplier = 0.0
                 self.fade_direction = 0
-                print(f"[FADE] Fade {'in' if self.fade_multiplier >= 0.5 else 'out'} complete (multiplier={self.fade_multiplier:.3f})")
             
             if samples_to_process < frames:
                 fade_envelope[samples_to_process:] = self.fade_multiplier
@@ -993,17 +987,8 @@ class SineRowPlayer:
         else:
             return signal * fade_envelope
 
-    def _generate_square_wave(self, duty_percent, mod_freq, frames):
-        dt = 1.0 / RATE
-        duty = duty_percent / 100.0
-        w = 2*np.pi*mod_freq
-        phi0 = self.mod_phase_accum
-        k = np.arange(frames, dtype=np.float32)
-        phase = (phi0 + w*dt*k) % (2*np.pi)
-        self.mod_phase_accum = (phi0 + w*dt*frames) % (2*np.pi)
-        return (phase / (2*np.pi) < duty).astype(np.float32)
-
-    def _generate_4_channel_audio(self, f0, fsweep, sspd, t0, tt_block, base_phase, frames):
+    def _generate_4_channel_audio(self, f0, fsweep, sspd, t0, tt_block, frames):
+        """Generate 4-channel carrier audio WITHOUT phase offsets (all in-phase)"""
         dt = 1.0 / RATE
         if fsweep and sspd:
             lfo = np.sin(2*np.pi*sspd*(t0 + tt_block))
@@ -1011,24 +996,31 @@ class SineRowPlayer:
             inst_f = np.clip(inst_f, 20, 200)
         else:
             inst_f = np.full_like(tt_block, f0)
+        
         audio_outputs = np.zeros((frames, 4), dtype=np.float32)
+        
+        # Generate phase for first channel
+        if isinstance(inst_f, np.ndarray):
+            phase_increments = 2 * np.pi * inst_f * dt
+            phi = self.phase_accum + np.cumsum(phase_increments)
+        else:
+            phase_increment = 2 * np.pi * inst_f * dt
+            phi = self.phase_accum + np.arange(frames) * phase_increment
+        
+        carrier = np.sin(phi).astype(np.float32)
+        
+        # All 4 channels get the SAME carrier signal (in-phase)
         for output_idx in range(4):
-            total_phase_deg = base_phase * output_idx
-            total_phase_rad = np.deg2rad(total_phase_deg)
-            if isinstance(inst_f, np.ndarray):
-                phase_increments = 2 * np.pi * inst_f * dt
-                phi = self.phase_accum + np.cumsum(phase_increments) + total_phase_rad
-            else:
-                phase_increment = 2 * np.pi * inst_f * dt
-                phi = self.phase_accum + np.arange(frames) * phase_increment + total_phase_rad
-            carrier = np.sin(phi).astype(np.float32)
             audio_outputs[:, output_idx] = carrier
+        
+        # Update phase accumulator
         if isinstance(inst_f, np.ndarray):
             phase_increments = 2 * np.pi * inst_f * dt
             self.phase_accum += np.sum(phase_increments)
         else:
             self.phase_accum += frames * 2 * np.pi * inst_f * dt
         self.phase_accum %= 2*np.pi
+        
         return audio_outputs
 
     def _route_audio_to_speakers(self, audio_outputs, mode):
@@ -1044,25 +1036,36 @@ class SineRowPlayer:
         return speaker_outputs
 
     def _pure_audio_loop(self):
+        """Improved audio loop with precise timing"""
+        frames_per_callback = BLOCK
+        expected_duration = frames_per_callback / RATE
+        next_callback_time = time.perf_counter()
+        
+        print("[AUDIO] Audio loop started")
+        
         while getattr(self, '_audio_running', False):
             try:
-                mixed_signal = self._generate_therapy_audio(BLOCK)
+                mixed_signal = self._generate_therapy_audio(frames_per_callback)
+                
                 if mixed_signal is not None and hasattr(self, '_alsa_process') and self._alsa_process:
-                    # Check if ALSA process is still alive
                     if self._alsa_process.poll() is None:
-                        # Efficient conversion without extra copies
                         int16_data = np.clip(mixed_signal, -1.0, 1.0)
                         int16_data = (int16_data * 32767.0).astype(np.int16, copy=False)
-                        
-                        # Complete blocking write
                         self._write_all(int16_data.tobytes())
                     else:
-                        if not hasattr(self, "_alsa_process") or self._alsa_process is None:
-                            break
-                        if self._alsa_process.poll() is not None:
-                            print("[AUDIO] ALSA process ended, stopping audio loop")
-                            break
-                        
+                        print("[AUDIO] ALSA process ended")
+                        break
+                
+                # Precise timing to maintain consistent sample rate
+                next_callback_time += expected_duration
+                sleep_time = next_callback_time - time.perf_counter()
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    # We're falling behind - reset timing
+                    next_callback_time = time.perf_counter()
+                    
             except BrokenPipeError:
                 print("[AUDIO] Broken pipe - ALSA process terminated")
                 break
@@ -1094,24 +1097,17 @@ class WebSocketHandler:
         except: pass
         
     def send_pause_complete(self):
-        """Send pause completion message to all clients"""
-        # Use a synchronous approach since this is called from the audio thread
         self._queue_message("pause:complete")
 
     def send_resume_complete(self):
-        """Send resume completion message to all clients"""
-        # Use a synchronous approach since this is called from the audio thread
         self._queue_message("resume:complete")
 
     def _queue_message(self, message):
-        """Queue a message to be sent to all clients"""
-        # Add the message to a queue that will be processed by the async loop
         if not hasattr(self, '_message_queue'):
             self._message_queue = []
         self._message_queue.append(message)
 
     def send_treatment_state(self, state: dict):
-        """Queue a serialized treatment-state snapshot for clients."""
         try:
             payload = "treatment-state:" + json.dumps(state, default=float)
             self._queue_message(payload)
@@ -1119,21 +1115,16 @@ class WebSocketHandler:
             print(f"[WS] Error queuing treatment-state: {e}")
         
     async def _process_queued_messages(self):
-        """Process any queued messages and send them to clients"""
         if not hasattr(self, '_message_queue') or not self._message_queue:
             return
-        
         messages_to_send = self._message_queue.copy()
         self._message_queue.clear()
-        
         for message in messages_to_send:
             await self._send_to_all_clients(message)
 
     async def _send_to_all_clients(self, message):
-        """Send message to all connected clients"""
         if not self.clients:
             return
-            
         disconnected = set()
         for client in self.clients:
             try:
@@ -1142,7 +1133,6 @@ class WebSocketHandler:
                 disconnected.add(client)
             except Exception as e:
                 print(f"[WS] Error sending message to client: {e}")
-        
         self.clients -= disconnected
 
     async def handle_client(self, ws, path=None):
@@ -1152,7 +1142,7 @@ class WebSocketHandler:
         try:
             async for msg in ws:
                 await self.send_pending_highlights()
-                await self._process_queued_messages()  # Add this line
+                await self._process_queued_messages()
                 
                 try:
                     data = json.loads(msg)
@@ -1161,6 +1151,7 @@ class WebSocketHandler:
                     continue
 
                 action = data.get("action")
+                await ws.send(f"debug:action-received:{action}")  # Send back to browser instead			
                 if action == "play-selected":
                     row_stub = data.get("row")
                     if row_stub:
@@ -1178,14 +1169,11 @@ class WebSocketHandler:
                     self.player.request_pause()
                     await ws.send("ack:pause")
 
-                # In WebSocketHandler._handle_ws (your 'resume' branch)
                 elif action == "resume":
                     print("[WS] Resume request received")
                     resume_state = data.get("resumeState")
-                    # Only accept a client snapshot if it looks like a proper one
                     if isinstance(resume_state, dict) and 'row_data' in resume_state:
                         self.player.saved_state = resume_state
-                    # Otherwise keep the internally saved snapshot from pause()
                     self.player.request_resume()
                     await ws.send("ack:resume")
                     
@@ -1193,7 +1181,6 @@ class WebSocketHandler:
                     control = data.get("control")
                     value = int(data.get("value", 5))
                     if control in ("user_strength", "user_neck", "user_back", "user_thighs", "user_legs"):
-                        # Store current user control values inside the player
                         setattr(self.player, control, value)
                         await ws.send(f"ack:set-user-control:{control}:{value}")
                         print(f"[USER] Updated {control} = {value}")
@@ -1209,8 +1196,6 @@ class WebSocketHandler:
                     try:
                         mono_flag = bool(data.get("mono", True))
                         self.player.bt_mono = mono_flag
-
-                        # Persist to config.json
                         cfg = load_config()
                         cfg["bt_mono"] = mono_flag
                         try:
@@ -1218,7 +1203,6 @@ class WebSocketHandler:
                                 json.dump(cfg, f, indent=2)
                         except Exception as e:
                             print(f"[CFG] save error: {e}")
-
                         await ws.send(f"ack:bt-set-mono:{mono_flag}")
                         print(f"[BT] Mono/stereo mode set to {'MONO' if mono_flag else 'STEREO'}")
                     except Exception as e:
@@ -1229,53 +1213,171 @@ class WebSocketHandler:
                     await self.handle_set_mix(ws, data)
                     
                 elif action == "ready":
-                    # No-op: just acknowledge so the client doesn't log error:unknown
                     try:
                         await ws.send("ack:ready")
                     except Exception:
                         pass
-
-                elif action == "bt-forget-all":
-                    # Safely remove all paired devices and reset BT capture state
+                        
+                elif action == "bt-remove-device":
                     try:
-                        # list paired devices
-                        ok, out = self._btctl("paired-devices")
+                        mac = data.get("mac")
+                        if not mac:
+                            await ws.send("error:bt-remove-device:no-mac")
+                            return
+                        
+                        print(f"[WS] Remove device request for {mac}")
+                        
+                        # Stop BT read thread if this is the current device
+                        if self.player.bt_mac_current == mac:
+                            if self.player.bt_read_running:
+                                self.player.bt_read_running = False
+                                if self.player.bt_read_thread:
+                                    self.player.bt_read_thread.join(timeout=2)
+                            
+                            try:
+                                if self.player.bt_input:
+                                    self.player.bt_input.close()
+                            except Exception:
+                                pass
+                            
+                            self.player.bt_input = None
+                            self.player.bt_enabled = False
+                            self.player.bt_mac_current = None
+                        
+                        # Remove the device
+                        success = self._remove_device_if_paired(mac)
+                        
+                        if success:
+                            await ws.send(f"ack:bt-remove-device:{mac}")
+                            print(f"[BT] Device {mac} removed successfully")
+                        else:
+                            await ws.send(f"error:bt-remove-device:not-found")
+                            print(f"[BT] Device {mac} not found in paired list")
+                            
+                    except Exception as e:
+                        await ws.send("error:bt-remove-device")
+                        print(f"[BT] remove-device failed: {e}")
+                        
+                elif action == "bt-forget-all":
+                    try:
+                        ok, out = self._btctl("devices", "Paired")
                         macs = re.findall(r"Device\s+([0-9A-F:]{17})", out or "", flags=re.I)
-
-                        # remove each
                         for m in macs:
                             self._btctl("remove", m)
-
-                        # drop any current capture so autoconnect can start fresh
+                        
+                        # Stop BT read thread cleanly
+                        if self.player.bt_read_running:
+                            self.player.bt_read_running = False
+                            if self.player.bt_read_thread:
+                                self.player.bt_read_thread.join(timeout=2)
+                        
+                        # Close BT input
                         try:
                             if self.player.bt_input:
                                 self.player.bt_input.close()
                         except Exception:
                             pass
+                        
                         self.player.bt_input = None
                         self.player.bt_enabled = False
                         self.player.bt_mac_current = None
                         self.bt_mac_current = None
-
-                        # make adapter discoverable again
+                        
+                        # Restart bluetooth service to clear all state
+                        subprocess.run(["sudo", "systemctl", "restart", "bluetooth"], check=False)
+                        await asyncio.sleep(3)
+                        
                         self._btctl("pairable", "on")
                         self._btctl("discoverable", "on")
-
                         await ws.send("ack:bt-forget-all")
-                        print("[BT] All paired devices removed; capture reset")
+                        print("[BT] All paired devices removed and Bluetooth restarted")
                     except Exception as e:
                         await ws.send("error:bt-forget-all")
                         print(f"[BT] forget-all failed: {e}")
 
+                elif action == "bt-list-paired":
+                    await ws.send("debug:BT-LIST-PAIRED-REACHED")
+                    print(f"[BT] Received bt-list-paired request")
+                    try:
+                        ok, out = self._btctl("devices", "Paired")
+                        connected_macs = set(self._list_a2dp_macs())
+                        print(f"[BT] Found {len(connected_macs)} connected devices")  # ← ADD THIS LINE
+                        
+                        if ok:
+                            macs = re.findall(r'Device\s+([0-9A-F:]{17})\s+(.+)', out or "", flags=re.I)
+                            print(f"[BT] Parsed {len(macs)} paired devices")  # ← ADD THIS LINE
+                            devices = []
+                            for mac, name in macs:
+                                devices.append({
+                                    "mac": mac,
+                                    "name": name.strip(),
+                                    "connected": mac in connected_macs
+                                })
+                            response = json.dumps({"devices": devices})
+                            print(f"[BT] Sending response: {response}")  # ← ADD THIS LINE
+                            await ws.send(f"ack:bt-list-paired:{response}")
+                        else:
+                            print("[BT] bluetoothctl paired-devices failed")  # ← ADD THIS LINE
+                            await ws.send("ack:bt-list-paired:{\"devices\":[]}")
+                    except Exception as e:
+                        await ws.send("error:bt-list-paired")
+                        print(f"[BT] list-paired failed: {e}")
+                        
                 elif action == "toggle-ap-mode":
-                    # Placeholder: acknowledge without changing system state.
-                    # Wire this to your AP/station switcher later (systemd, flag file, etc).
                     try:
                         await ws.send("ack:toggle-ap-mode:noop")
                         print("[AP] toggle-ap-mode requested (noop)")
                     except Exception:
                         pass
-
+                        
+                elif action == "wifi-stream-start":
+                    print("[WIFI] Starting WiFi audio streaming mode")
+                    self.player.wifi_stream_enabled = True
+                    self.player.wifi_stream_underruns = 0
+                    self.player.row = None
+                    self.player.is_playing_sequence = False
+                    while not self.player.wifi_audio_queue.empty():
+                        try:
+                            self.player.wifi_audio_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    await ws.send("ack:wifi-stream-start")
+                    
+                elif action == "wifi-stream-stop":
+                    print("[WIFI] Stopping WiFi audio streaming mode")
+                    self.player.wifi_stream_enabled = False
+                    while not self.player.wifi_audio_queue.empty():
+                        try:
+                            self.player.wifi_audio_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    await ws.send("ack:wifi-stream-stop")
+                    
+                elif action == "wifi-stream-data":
+                    try:
+                        audio_data = data.get("data")
+                        
+                        if isinstance(audio_data, str):
+                            import base64
+                            binary = base64.b64decode(audio_data)
+                            audio_array = np.frombuffer(binary, dtype=np.float32)
+                        else:
+                            audio_array = np.array(audio_data, dtype=np.float32)
+                        
+                        expected_size = BLOCK * CHANNELS
+                        if len(audio_array) == expected_size:
+                            try:
+                                self.player.wifi_audio_queue.put_nowait(audio_array)
+                                await ws.send("ack:wifi-stream-data")
+                            except queue.Full:
+                                await ws.send("error:wifi-stream-data:queue-full")
+                        else:
+                            await ws.send(f"error:wifi-stream-data:size-mismatch:{len(audio_array)}:{expected_size}")
+                            
+                    except Exception as e:
+                        print(f"[WIFI] Error processing stream data: {e}")
+                        await ws.send("error:wifi-stream-data")
+        
                 else:
                     await ws.send("error:unknown")
 
@@ -1286,8 +1388,57 @@ class WebSocketHandler:
         finally:
             self.clients.discard(ws)
 
+    def _remove_device_if_paired(self, mac: str) -> bool:
+        """Remove device completely - bluetoothctl, filesystem, and restart service"""
+        try:
+            print(f"[BT] Starting complete removal of {mac}")
+            
+            # Step 1: Remove via bluetoothctl
+            ok, out = self._btctl("devices", "Paired")
+            if mac.upper() in out.upper():
+                print(f"[BT] Device found in paired list, removing...")
+                self._btctl("remove", mac)
+                time.sleep(0.5)
+            
+            # Step 2: Remove pairing keys from filesystem
+            mac_formatted = mac.upper().replace(':', '_')
+            try:
+                # Use subprocess to find and remove directories
+                find_result = subprocess.run(
+                    ["sudo", "find", "/var/lib/bluetooth", "-type", "d", "-name", mac_formatted],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                for device_dir in find_result.stdout.strip().split('\n'):
+                    if device_dir:  # Skip empty lines
+                        print(f"[BT] Removing pairing keys from {device_dir}")
+                        subprocess.run(["sudo", "rm", "-rf", device_dir], timeout=3)
+            except Exception as e:
+                print(f"[BT] Could not remove filesystem keys: {e}")
+            
+            # Step 3: Restart bluetooth to clear all cached state
+            print("[BT] Restarting bluetooth service to clear cache")
+            subprocess.run(["sudo", "systemctl", "restart", "bluetooth"], timeout=10)
+            time.sleep(3)
+            
+            # Step 4: Re-initialize agent and make discoverable
+            self._btctl("power", "on")
+            time.sleep(0.5)
+            self._btctl("agent", "NoInputNoOutput")
+            self._btctl("default-agent")
+            self._btctl("pairable", "on")
+            self._btctl("discoverable", "on")
+            
+            print(f"[BT] Successfully removed {mac} and cleared all pairing data")
+            return True
+            
+        except Exception as e:
+            print(f"[BT] Error during removal: {e}")
+            return False
+
     def _list_a2dp_macs(self):
-        """Return list of MAC addresses of connected A2DP devices."""
         try:
             r = subprocess.run(
                 ["bluetoothctl", "devices", "Connected"],
@@ -1307,7 +1458,6 @@ class WebSocketHandler:
             return False, str(e)
 
     def _check_bt_device_connected(self, mac: str) -> bool:
-        """Check if a BT device with MAC is currently connected."""
         try:
             r = subprocess.run(
                 ["bluetoothctl", "info", mac],
@@ -1338,6 +1488,8 @@ class WebSocketHandler:
         print(f"[BT] autoconnect loop started with MAC: {mac}")
         current_mac = None
         did_agent = False
+        connection_failures = 0
+        max_failures = 3
 
         def _is_connected(m):
             try:
@@ -1350,45 +1502,67 @@ class WebSocketHandler:
             try:
                 auto_mode = self._is_auto(mac)
 
-                # One-time BlueZ agent/power setup
                 if not did_agent:
                     if not await self._wait_bt_daemons_ready(timeout=20):
                         print("[BT] Daemons not ready yet; retrying...")
                         await asyncio.sleep(2)
                         continue
-                print("[BT] Setting up agent and making discoverable...")
-                self._btctl("agent", "NoInputNoOutput")
-                self._btctl("default-agent")
-                self._btctl("pairable", "on")
-                self._btctl("discoverable", "on")
-                self._btctl("power", "on")
+                    print("[BT] Setting up agent and making discoverable...")
+                    self._btctl("agent", "NoInputNoOutput")
+                    self._btctl("default-agent")
+                    self._btctl("pairable", "on")
+                    self._btctl("discoverable", "on")
+                    self._btctl("power", "on")
+                    did_agent = True
                 
-                # Confirm adapter state
-                ok, show = self._btctl("show")
-                if "Powered: yes" in show and "Discoverable: yes" in show and "Pairable: yes" in show:
-                    print("[BT] Adapter is discoverable and pairable – waiting for new device to pair")
-                else:
-                    print("[BT] WARNING: Adapter did not enter discoverable mode, check bluetoothd")
-
-                # --- AUTO MODE ---
                 if auto_mode:
+                    # First, check for paired but disconnected devices and remove them
+                    ok, paired_output = self._btctl("paired-devices")
+                    if ok:
+                        paired_macs = re.findall(r'Device\s+([0-9A-F:]{17})', paired_output or "", flags=re.I)
+                        connected_macs = self._list_a2dp_macs()
+                        
+                        # Remove devices that are paired but not connected (stale pairings)
+                        stale_found = False
+                        for paired_mac in paired_macs:
+                            if paired_mac not in connected_macs:
+                                print(f"[BT] Found stale paired device: {paired_mac}, removing completely")
+                                self._remove_device_if_paired(paired_mac)
+                                stale_found = True
+                        
+                        # After cleanup, wait for bluetooth to stabilize
+                        if stale_found:
+                            await asyncio.sleep(5)
+                    
+                    # Now proceed with normal connection logic
                     macs = self._list_a2dp_macs()
                     if not macs:
                         await asyncio.sleep(3)
                         continue
-
-                    # prefer to stick with the same device if still present
                     pick = current_mac if current_mac in macs else macs[0]
                     if pick != current_mac:
                         subprocess.run(["bluetoothctl", "trust", pick], check=False)
                         if not _is_connected(pick):
-                            subprocess.run(["bluetoothctl", "connect", pick], check=False)
+                            result = subprocess.run(
+                                ["bluetoothctl", "connect", pick], 
+                                capture_output=True, 
+                                text=True, 
+                                timeout=10
+                            )
+                            
+                            # Check for authentication errors even in auto mode
+                            if result.returncode != 0:
+                                error_text = (result.stdout + result.stderr).lower()
+                                if any(err in error_text for err in ["incorrect pin", "authentication failed", "authentication rejected"]):
+                                    print(f"[BT] Authentication error in auto mode - removing {pick}")
+                                    self._remove_device_if_paired(pick)
+                                    await asyncio.sleep(3)
+                                    continue
+                                    
                         current_mac = pick
-
                     active_mac = pick
                     self.bt_mac_current = active_mac
 
-                    # If device disconnected, drop capture so we can reconnect cleanly
                     if not _is_connected(active_mac):
                         if self.player.bt_input:
                             try: self.player.bt_input.close()
@@ -1398,7 +1572,6 @@ class WebSocketHandler:
                         self.player.bt_mac_current = None
                         await asyncio.sleep(2)
 
-                    # Need to (re)setup capture?
                     need_setup = (
                         not self.player.bt_enabled
                         or self.player.bt_input is None
@@ -1413,26 +1586,70 @@ class WebSocketHandler:
                         await asyncio.sleep(6)
                     continue
 
+                # Manual mode - specific MAC
                 if self.bt_mac_current and self.bt_mac_current not in self._list_a2dp_macs():
                     print(f"[BT] Forgetting {self.bt_mac_current}, device not present")
                     self.bt_mac_current = None
                     self.player.bt_input = None
                     self.player.bt_enabled = False
-                    # Go back to discoverable so new devices can pair
                     self._btctl("discoverable", "on")
                     self._btctl("pairable", "on")
 
-                # --- MANUAL MODE (fixed MAC) ---
                 active_mac = mac
+                
                 if not _is_connected(active_mac):
-                    subprocess.run(["bluetoothctl", "trust", active_mac], check=False)
-                    subprocess.run(["bluetoothctl", "connect", active_mac], check=False)
+                    connection_failures += 1
+                    
+                    # Try to connect
+                    result = subprocess.run(
+                        ["bluetoothctl", "connect", active_mac], 
+                        capture_output=True, 
+                        text=True, 
+                        timeout=10
+                    )
+                    
+                    # Check for authentication/PIN errors immediately
+                    if result.returncode != 0:
+                        error_text = (result.stdout + result.stderr).lower()
+                        
+                        # Immediate cleanup on authentication errors
+                        if any(err in error_text for err in ["incorrect pin", "authentication failed", "authentication rejected"]):
+                            print(f"[BT] Authentication error for {active_mac} - removing stale pairing immediately")
+                            self._remove_device_if_paired(active_mac)
+                            self._btctl("discoverable", "on")
+                            self._btctl("pairable", "on")
+                            connection_failures = 0  # Reset since we cleaned up
+                            await asyncio.sleep(5)
+                            continue
+                        
+                        # Other connection errors
+                        if any(err in error_text for err in ["not available", "connection refused", "no such device"]):
+                            # Check if too many failures
+                            if connection_failures >= max_failures:
+                                print(f"[BT] {connection_failures} consecutive failures, cleaning up pairing")
+                                self._remove_device_if_paired(active_mac)
+                                self._btctl("discoverable", "on")
+                                self._btctl("pairable", "on")
+                                connection_failures = 0
+                                await asyncio.sleep(5)
+                                continue
+                    else:
+                        # Connection succeeded, trust the device
+                        subprocess.run(["bluetoothctl", "trust", active_mac], check=False)
+                        connection_failures = 0  # Reset on success
+                    
+                    # Wait for connection to stabilize
+                    await asyncio.sleep(2)
+                else:
+                    # Connection already exists - reset failure counter
+                    connection_failures = 0
 
                 self.bt_mac_current = active_mac
                 current_mac = active_mac
 
-                # If device disconnected, drop capture so we can reconnect cleanly
+                # Re-check connection status after connection attempt
                 if not _is_connected(active_mac):
+                    print(f"[BT] Device {active_mac} still not connected after attempt")
                     if self.player.bt_input:
                         try: self.player.bt_input.close()
                         except Exception: pass
@@ -1440,7 +1657,11 @@ class WebSocketHandler:
                     self.player.bt_enabled = False
                     self.player.bt_mac_current = None
                     await asyncio.sleep(2)
+                    continue  # Go back to top of loop to retry
 
+                # Connection verified - reset failure counter and proceed with setup
+                connection_failures = 0
+                
                 need_setup = (
                     not self.player.bt_enabled
                     or self.player.bt_input is None
@@ -1453,7 +1674,6 @@ class WebSocketHandler:
                     await asyncio.sleep(3 if ok else 6)
                 else:
                     await asyncio.sleep(6)
-                continue
 
             except asyncio.CancelledError:
                 break
@@ -1480,35 +1700,14 @@ class WebSocketHandler:
             json.dump(cur, f, indent=2)
         self._last_applied_bt_gain = bt_gain
         print(f"[MIX] Updated bt_gain={bt_gain}")
-
-    def _check_bt_device_connected(self, mac: str) -> bool:
-        try:
-            r = subprocess.run(["bluetoothctl", "info", mac], capture_output=True, text=True, timeout=5)
-            return "Connected: yes" in r.stdout
-        except Exception:
-            return False
-
-    def _bt_connect_once(self, mac: str) -> bool:
-        if self._is_auto(mac):
-            return False
-        try:
-            subprocess.run(["bluetoothctl", "power", "on"], check=False)
-            subprocess.run(["bluetoothctl", "trust", mac], check=False)
-            subprocess.run(["bluetoothctl", "connect", mac], capture_output=True, timeout=10)
-            return self._check_bt_device_connected(mac)
-        except Exception:
-            return False
             
     def _graceful_stop(self):
-        # stop BT loop
         try:
             self.bt_enabled = False
             if self.bt_task and not self.bt_task.done():
                 self.bt_task.cancel()
         except Exception:
             pass
-
-        # stop any spawned bluealsa-aplay
         try:
             ba = getattr(self.player, "_ba_proc", None)
             if ba:
@@ -1518,13 +1717,18 @@ class WebSocketHandler:
         except Exception:
             pass
 
-    def _bt_start(self, mac: str | None):
+    def _bt_start(self, mac: str | None, clear_first: bool = True):
+        """Start BT with optional cleanup of all pairings"""
+        if clear_first:
+            print("[BT] Clearing all pairings for fresh start")
+            ok, out = self._btctl("devices", "Paired")
+            if ok:
+                macs = re.findall(r"Device\s+([0-9A-F:]{17})", out or "", flags=re.I)
+                for m in macs:
+                    self._remove_device_if_paired(m)
+        
         self.bt_mac = (mac or "auto")
-
-        # Enable BT 
         self.bt_enabled = True
-
-        # (Re)start the BT autoconnect loop
         if self.bt_task and not self.bt_task.done():
             self.bt_task.cancel()
         self.bt_task = asyncio.create_task(self._bt_autoconnect_loop(self.bt_mac))
@@ -1536,15 +1740,12 @@ class WebSocketHandler:
             await ws.send("error:bad-mix")
             return
         theta = math.radians(90.0 * (x / 100.0))
-        g_music_amp   = math.cos(theta)
+        g_music_amp = math.cos(theta)
         g_therapy_amp = math.sin(theta)
         bt_gain = round(float(g_music_amp), 4)
         
-        # Apply gains directly to player
         self.player.bt_gain = bt_gain
         self.player.therapy_gain = g_therapy_amp
-        
-        # Persist BT gain 
         self._apply_bt_gain(bt_gain)
         await ws.send("ack:set-mix")
 
@@ -1557,7 +1758,7 @@ class WebSocketHandler:
         for client in self.clients:
             try: await client.send(message)
             except websockets.exceptions.ConnectionClosed: disconnected.add(client)
-            except Exception as e: print(f"[WS] Error sending clear highlight to client: {e}")
+            except Exception as e: print(f"[WS] Error sending clear highlight: {e}")
         self.clients -= disconnected
 
     async def send_highlight(self, row_index):
@@ -1566,7 +1767,7 @@ class WebSocketHandler:
         for client in self.clients:
             try: await client.send(message)
             except websockets.exceptions.ConnectionClosed: disconnected.add(client)
-            except Exception as e: print(f"[WS] Error sending highlight to client: {e}")
+            except Exception as e: print(f"[WS] Error sending highlight: {e}")
         self.clients -= disconnected
 
     async def send_pending_highlights(self):
@@ -1594,7 +1795,6 @@ def _release_audio():
 
 def _sigterm_handler(signum, frame):
     try:
-        # stop BT/autoconnect & helper processes first
         ws_handler._graceful_stop()
     except Exception:
         pass
@@ -1609,10 +1809,7 @@ async def monitor_device():
     last_available = None
     while True:
         await asyncio.sleep(1.0)
-
-        # Direct USB output - no more Loopback switching
         desired = "ICUSBAUDIO7D"
-
         if desired != getattr(ws_handler.player, "output_device_hint", ""):
             print(f"[AUDIO] switching output to {desired}")
             ws_handler.player.output_device_hint = desired
@@ -1633,9 +1830,17 @@ async def main():
     asyncio.create_task(monitor_device()); asyncio.create_task(highlight_sender())
     while True:
         try:
-            async with websockets.serve(ws_handler.handle_client,"0.0.0.0",PORT):
+            async with websockets.serve(
+                ws_handler.handle_client,
+                "0.0.0.0",
+                PORT,
+                ping_interval=None,
+                ping_timeout=None,
+                close_timeout=None,
+                max_size=None
+            ):
                 print(f"[WS] Listening on :{PORT}")
-                ws_handler._bt_start("auto")
+                ws_handler._bt_start("auto", clear_first=False)  # Don't clear on service start
                 await asyncio.Future()
         except OSError as e:
             if getattr(e,"errno",None)==98: print(f"[WARN] Port {PORT} busy; retrying"); await asyncio.sleep(2); continue
