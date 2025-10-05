@@ -4,19 +4,15 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>SoniXcape Treatment System</title>
   
-  <!-- Fullscreen web app meta tags -->
   <meta name="theme-color" content="#1e1e1e">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 
   <link rel="manifest" href="manifest.json">
-
-  <!-- Font Awesome for icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
 
   <style>
-    /* BASIC LAYOUT */
     body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f0f2f5}
     .wrap{max-width:960px;margin:0 auto;padding:24px}
     h1{color:#1a73e8;margin:0 0 16px}
@@ -26,11 +22,10 @@
     th,td{padding:4px;border:1px solid #ddd;text-align:center;overflow:hidden}
     th{background:#1a73e8;color:#fff;font-weight:500}
     tr:hover{background:#f6f9ff}
-    /* VIEW SWITCHING */
+    
     .view{display:none}
     .view.active{display:block}
     
-    /* NEW HOME VIEW STYLES - Mobile Optimized */
     .home-container {
       background-color: #1e1e1e;
       color: #ccc;
@@ -116,7 +111,6 @@
     .menu-content a:hover { background-color: #444; }
     .menu:hover .menu-content { display: block; }
 
-    /* Session slider */
     .session-slider {
       width: 100%;
       display: flex;
@@ -257,8 +251,41 @@
     .bt-controls button:hover {
       background: #666;
     }
-    
-    /* BUTTONS & STATES */
+  
+    .bt-device-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      margin: 8px 0;
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+    }
+    .bt-device-info {
+      flex: 1;
+    }
+    .bt-device-name {
+      font-weight: 500;
+      color: #1a73e8;
+    }
+    .bt-device-mac {
+      font-size: 0.85em;
+      color: #666;
+      font-family: monospace;
+    }
+    .bt-device-item button {
+      padding: 6px 12px;
+      background: #d93025;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .bt-device-item button:hover {
+      background: #b91c1c;
+    }
+  
     .actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
     .btn{flex:1;min-width:100px;padding:10px;border:none;border-radius:6px;color:#fff;background:#1a73e8;font-size:1rem;cursor:pointer;transition:all 0.3s}
     .btn:hover{background:#1557b0;transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.2)}
@@ -269,24 +296,22 @@
     .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
     .btn.large{padding:14px 24px;font-size:1.1rem}
     
-    /* NAV BUTTONS */
     .nav-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding:10px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
     .nav-btn{padding:8px 16px;background:#fff;color:#1a73e8;border:2px solid #1a73e8;border-radius:6px;cursor:pointer;font-weight:500}
     .nav-btn:hover{background:#1a73e8;color:#fff}
     
-    /* TABLE STATES */
     .highlight-selected{background:#cce5ff!important}
     .copy-flash,.paste-flash{background:#fff3cd!important}
     .highlight-playing{background:#fffacd!important}
-    /* SLIDERS */
+    
     input[type=range].v{writing-mode:vertical-lr;direction:rtl;height:180px;width:80%}
-    /* STATUS INDICATOR */
+    
     .status-indicator{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;background:#fff;border-radius:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
     .status-dot{width:10px;height:10px;border-radius:50%;background:#ccc;animation:pulse 2s infinite}
     .status-dot.active{background:#4caf50}
     .status-dot.playing{background:#ffc107}
     @keyframes pulse{0%{opacity:1}50%{opacity:0.5}100%{opacity:1}}
-    /* MODAL STYLES */
+    
     .modal {display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background-color:rgba(0,0,0,0.5);align-items:center;justify-content:center;}
     .modal-content {background-color:#fff;padding:20px;border-radius:8px;width:80%;max-width:600px;max-height:80%;overflow-y:auto;}
     .modal-header {display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
@@ -294,42 +319,54 @@
     .close:hover {color:#000;}
     .conflict-msg {background-color:#fff3cd;border:1px solid #ffeaa7;padding:10px;border-radius:4px;margin:10px 0;}
     pre {background-color:#f8f9fa;border:1px solid #dee2e6;border-radius:4px;padding:10px;overflow-x:auto;font-size:12px;}
+    
+    #wifiStreamModal .modal-content {
+      max-width: 700px;
+    }
+    
+    #wifiStreamStatusText {
+      font-weight: bold;
+    }
+    
+    #wifiStreamStatusText.active {
+      color: #28a745;
+    }
+    
+    #wifiStreamStatusText.error {
+      color: #dc3545;
+    }
   </style>
 </head>
 <body>
 <div class="wrap">
-  <!-- HOME/PLAYER VIEW -->
   <div id="homeView" class="view active">
     <div class="home-container">
       <div class="home-content">
-        <!-- Header -->
         <div class="header">
           <div id="homeStatusText" class="status ready">Ready</div>
           <div id="sessionDial" class="dial">30 min</div>
-          <div class="menu">
-            <button><i class="fas fa-bars"></i></button>
-            <div class="menu-content">
+            <div class="menu">
+              <button><i class="fas fa-bars"></i></button>
+              <div class="menu-content">
               <a onclick="document.getElementById('uploadSingleFile').click()">Upload Treatment</a>
               <a onclick="showView('managerView')">Treatment Manager</a>
-              <a onclick="forgetBT()">Forget BT</a>
+              <a onclick="showBluetoothModal()">Manage Bluetooth</a>
+              <a onclick="showWiFiStreamModal()">WiFi Audio Stream</a>
               <a onclick="toggleAPMode()">AP Mode</a>
+              </div>
             </div>
-          </div>
         </div>
 
-        <!-- Session Slider -->
         <div class="session-slider">
           <input id="sessionRange" type="range" min="5" max="60" step="5" value="30"
             oninput="document.getElementById('sessionDial').textContent = this.value + ' min'">
           <label for="sessionRange">Session</label>
         </div>
 
-        <!-- Treatment selector -->
         <select id="homePresetSel" class="home-select">
           <option>Select Treatment</option>
         </select>
 
-        <!-- BT Controls -->
         <div class="bt-controls">
           <label>
             <input id="btMonoChk" type="checkbox" checked />
@@ -338,13 +375,11 @@
           <button id="btStereoBtn" type="button">Stereo</button>
         </div>
 
-        <!-- Controls -->
         <div class="controls">
           <button id="homePlayPauseBtn" class="play-btn" title="Play"><i class="fas fa-play"></i></button>
           <button id="homeStopBtn" class="stop-btn" title="Stop"><i class="fas fa-stop"></i></button>
         </div>
 
-        <!-- Mix Slider -->
         <div class="mix-slider">
           <i class="fas fa-music"></i>
           <input id="mixSlider" type="range" min="0" max="100" value="50">
@@ -377,10 +412,9 @@
     </div>
   </div>
 
-  <!-- TREATMENT MANAGER VIEW -->
   <div id="managerView" class="view">
     <div class="nav-bar">
-      <button class="nav-btn" onclick="showView('homeView')">? Back to Home</button>
+      <button class="nav-btn" onclick="showView('homeView')">← Back to Home</button>
       <h2 style="margin:0">Treatment Manager</h2>
       <div style="width:120px"></div>
     </div>
@@ -422,11 +456,79 @@
       <button class="btn grey" onclick="stopPreset()">Stop</button>
     </div>
   </div>
+  
+  <div id="btModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Bluetooth Devices</h2>
+        <span class="close" onclick="closeBluetoothModal()">&times;</span>
+      </div>
+      <div id="btDeviceList" style="margin: 20px 0;">
+        <p style="text-align: center; color: #666;">Loading devices...</p>
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn" onclick="refreshBluetoothList()">Refresh</button>
+        <button class="btn danger" onclick="forgetAllBT()">Forget All</button>
+      </div>
+    </div>
+  </div>
+  
+  <div id="wifiStreamModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>WiFi Audio Streaming</h2>
+        <span class="close" onclick="closeWiFiStreamModal()">&times;</span>
+      </div>
+      
+      <div style="padding: 20px;">
+        <p style="color: #666; margin-bottom: 20px;">
+          Enable this mode to receive 8-channel audio from an external computer over WiFi.
+          The external computer must send audio at 48kHz, 1200 samples per block.
+        </p>
+        
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+          <h3 style="margin: 0 0 10px 0;">Connection Info</h3>
+          <div style="font-family: monospace; font-size: 14px;">
+            <div><strong>WebSocket URL:</strong> ws://<span id="wifiStreamIP">loading...</span>:8081</div>
+            <div><strong>Sample Rate:</strong> 48000 Hz</div>
+            <div><strong>Block Size:</strong> 1200 samples</div>
+            <div><strong>Channels:</strong> 8</div>
+            <div><strong>Format:</strong> Float32 (-1.0 to +1.0)</div>
+          </div>
+        </div>
+        
+        <div id="wifiStreamStatus" style="padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 15px;">
+          <strong>Status:</strong> <span id="wifiStreamStatusText">Inactive</span>
+        </div>
+        
+        <div id="wifiStreamStats" style="display: none; padding: 10px; background: #f8f9fa; border-radius: 5px; margin-bottom: 15px;">
+          <div><strong>Underruns:</strong> <span id="wifiUnderruns">0</span></div>
+          <div><strong>Queue Status:</strong> <span id="wifiQueueStatus">Empty</span></div>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+          <button id="wifiStreamStartBtn" class="btn" onclick="startWiFiStream()">Start Streaming</button>
+          <button id="wifiStreamStopBtn" class="btn grey" onclick="stopWiFiStream()" disabled>Stop Streaming</button>
+        </div>
+        
+        <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
+          <h4 style="margin: 0 0 10px 0;">⚠️ Important Notes</h4>
+          <ul style="margin: 5px 0; padding-left: 20px; font-size: 14px;">
+            <li>This mode disables built-in therapy signal generation</li>
+            <li>Bluetooth audio mixing still works</li>
+            <li>External computer must send data continuously to avoid audio gaps</li>
+            <li>Network latency affects audio quality - use wired connection for best results</li>
+            <li>Example Python client code available in ws_audio.py comments</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+  
   <div id="toast" style="visibility:hidden;min-width:200px;background:#333;color:#fff;text-align:center;border-radius:4px;padding:12px;position:fixed;z-index:1;left:50%;bottom:30px;transform:translateX(-50%);font-size:17px"></div>
 </div>
 
 <script>
-
 const fields = ['time','strength','frequency','freqSweep','sweepSpeed','neck','back','thighs','legs','modSpeed','phase','mode'];
 
 const sliderMinMax = {
@@ -445,7 +547,8 @@ const ajax=(u,m,b)=>fetch(u,{method:m,headers:{'Content-Type':'application/json'
 let sliderListenersAttached = false;
 let isPaused = false;
 let lastSelectedTreatment = -1;
-let currentTreatmentState = null; // Will store resume state
+let currentTreatmentState = null;
+let wifiStreamActive = false;
 
 function forgetBT() {
   if (confirm('Forget all Bluetooth devices?')) {
@@ -454,9 +557,112 @@ function forgetBT() {
   }
 }
 
+function showBluetoothModal() {
+  const modal = qs('#btModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    console.log('[BT Modal] Opening, WS state:', ws ? ws.readyState : 'ws is null');
+    console.log('[BT Modal] Sending bt-list-paired request');
+    send({action: 'bt-list-paired'});
+  }
+}
+
+function closeBluetoothModal() {
+  const modal = qs('#btModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function refreshBluetoothList() {
+  send({action: 'bt-list-paired'});
+}
+
+function removeBTDevice(mac, name) {
+  if (confirm(`Remove "${name}"?\n\nYou'll need to pair again from your phone.`)) {
+    send({action: 'bt-remove-device', mac: mac});
+    setTimeout(refreshBluetoothList, 1000);
+  }
+}
+
+function forgetAllBT() {
+  if (confirm('Remove ALL Bluetooth devices?\n\nYou\'ll need to pair all devices again.')) {
+    send({action: 'bt-forget-all'});
+    setTimeout(() => {
+      closeBluetoothModal();
+      showToast('All Bluetooth devices removed');
+    }, 1000);
+  }
+}
+
 function toggleAPMode() {
   send({action: 'toggle-ap-mode'});
   showToast('AP Mode toggled');
+}
+
+function showWiFiStreamModal() {
+  const modal = document.getElementById('wifiStreamModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    updateWiFiStreamIP();
+  }
+}
+
+function closeWiFiStreamModal() {
+  const modal = document.getElementById('wifiStreamModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function updateWiFiStreamIP() {
+  const hostname = window.location.hostname;
+  const ipSpan = document.getElementById('wifiStreamIP');
+  if (ipSpan) {
+    ipSpan.textContent = hostname;
+  }
+}
+
+function startWiFiStream() {
+  if (!ws || ws.readyState !== 1) {
+    showToast('WebSocket not connected');
+    return;
+  }
+  
+  send({action: 'wifi-stream-start'});
+  
+  document.getElementById('wifiStreamStartBtn').disabled = true;
+  document.getElementById('wifiStreamStopBtn').disabled = false;
+  
+  const statusText = document.getElementById('wifiStreamStatusText');
+  if (statusText) {
+    statusText.textContent = 'Waiting for data...';
+    statusText.className = 'active';
+  }
+  
+  document.getElementById('wifiStreamStats').style.display = 'block';
+  
+  wifiStreamActive = true;
+  showToast('WiFi streaming mode enabled');
+}
+
+function stopWiFiStream() {
+  if (!ws || ws.readyState !== 1) {
+    showToast('WebSocket not connected');
+    return;
+  }
+  
+  send({action: 'wifi-stream-stop'});
+  
+  document.getElementById('wifiStreamStartBtn').disabled = false;
+  document.getElementById('wifiStreamStopBtn').disabled = true;
+  
+  const statusText = document.getElementById('wifiStreamStatusText');
+  if (statusText) {
+    statusText.textContent = 'Inactive';
+    statusText.className = '';
+  }
+  
+  document.getElementById('wifiStreamStats').style.display = 'none';
+  
+  wifiStreamActive = false;
+  showToast('WiFi streaming mode disabled');
 }
 
 function connectWS(){
@@ -522,7 +728,6 @@ function connectWS(){
   ws.addEventListener('message', enhancedWebSocketHandler);
 }
 
-// Local storage backend
 const LS_KEY = 'sx_presets_v1';
 function lsRead(){ try{const x=JSON.parse(localStorage.getItem(LS_KEY)); return Array.isArray(x)?x:[];}catch{return[];} }
 function lsWrite(arr){ try{localStorage.setItem(LS_KEY, JSON.stringify(arr));}catch{} }
@@ -558,9 +763,19 @@ window.fetch = function(url, options = {}){
   return originalFetch(url, options);
 };
 
+const messageQueue = [];
+
 function send(obj){
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
-  else console.warn('WS not ready, ignoring:', obj.action);
+  console.log('[SEND] Called with:', obj.action, 'WS ready:', ws && ws.readyState === 1);
+  const jsonStr = JSON.stringify(obj);
+  
+  if (ws && ws.readyState === 1) {
+    ws.send(jsonStr);
+    console.log('[SEND] Sent successfully');
+  } else {
+    console.warn('WS not ready, queueing:', obj.action);
+    messageQueue.push(obj);
+  }
 }
 
 function showView(viewId) {
@@ -619,7 +834,6 @@ function rowHTML(i,r){
 
 function buildTable(rows){
   while (rows.length < ROWS) rows.push({ ...DEFAULT_ROW });
-  // Render using the existing rowHTML which maps each field correctly
   qs('#mat tbody').innerHTML = rows.map((r, i) => rowHTML(i, r)).join('');
 }
 
@@ -693,10 +907,9 @@ async function saveAsPreset() {
   const newName = prompt('Enter new preset name:', currentPreset.name + ' Copy');
   
   if (!newName || !newName.trim()) {
-    return; // User cancelled or entered empty name
+    return;
   }
   
-  // Check if name already exists
   const existingPreset = presets.find(p => p.name.toLowerCase() === newName.trim().toLowerCase());
   if (existingPreset) {
     if (!confirm(`A preset named "${newName.trim()}" already exists. Overwrite it?`)) {
@@ -704,23 +917,18 @@ async function saveAsPreset() {
     }
   }
   
-  // Create new preset with current table data
   const newPreset = {
     id: existingPreset ? existingPreset.id : 'preset-' + Date.now(),
     name: newName.trim(),
     description: currentPreset.description || '',
     category: currentPreset.category || '',
-    rows: gatherRows() // Get current table data from the matrix
+    rows: gatherRows()
   };
   
   try {
-    // Save the preset
     await ajax('/save-preset', 'POST', JSON.stringify(newPreset));
-    
-    // Reload the preset list to include the new one
     await loadList(newPreset.id);
     
-    // Switch to the new preset in the dropdown
     const newIndex = presets.findIndex(p => p.id === newPreset.id);
     if (newIndex >= 0) {
       const presetSel = qs('#presetSel');
@@ -731,9 +939,7 @@ async function saveAsPreset() {
       curIdx = newIndex;
     }
     
-    // Update home view preset list too
     updateHomePresetList();
-    
     showToast(`Preset saved as "${newPreset.name}"`);
   } catch (error) {
     console.error('Error saving preset:', error);
@@ -793,11 +999,9 @@ function playAll(){
   let rows = gatherRows();
 
   if (qs('#homeView').classList.contains('active')) {
-    // Home page ? scale to session length
     rows = normalizeRowTimes(rows);
     rows = scaleRowsBySession(rows).map(r => ({...r, ...userVals}));
   } else {
-    // Manager view ? therapist minutes, convert to seconds
     rows = rows.map(r => ({...r, ...userVals, time: r.time}));
   }
 
@@ -856,8 +1060,6 @@ function downloadCurrentPreset(){
   a.href=url;a.download=p.name.replace(/\s+/g,'_')+'.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
 }
 
-// Replace the existing uploadSinglePreset function with this one:
-
 function uploadSinglePreset(e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -867,7 +1069,6 @@ function uploadSinglePreset(e) {
     try {
       const uploadedPreset = JSON.parse(evt.target.result);
       
-      // Validate the uploaded file
       if (!uploadedPreset.name) {
         showToast('Invalid treatment file: missing name');
         return;
@@ -878,28 +1079,23 @@ function uploadSinglePreset(e) {
         return;
       }
       
-      // Ensure the preset has proper structure
       if (!uploadedPreset.id) {
         uploadedPreset.id = 'preset-' + Date.now();
       }
       
-      // Pad rows to ensure we have exactly ROWS entries
       while (uploadedPreset.rows.length < ROWS) {
         uploadedPreset.rows.push({...DEFAULT_ROW});
       }
       
-      // Trim if too many rows
       if (uploadedPreset.rows.length > ROWS) {
         uploadedPreset.rows = uploadedPreset.rows.slice(0, ROWS);
       }
       
-      // Validate and fix each row
       uploadedPreset.rows = uploadedPreset.rows.map(row => ({
         ...DEFAULT_ROW,
         ...row
       }));
       
-      // Check if name already exists
       const existingIndex = presets.findIndex(p => 
         p.name.toLowerCase() === uploadedPreset.name.toLowerCase()
       );
@@ -910,10 +1106,8 @@ function uploadSinglePreset(e) {
         );
         
         if (overwrite) {
-          // Keep the existing ID but update everything else
           uploadedPreset.id = presets[existingIndex].id;
         } else {
-          // Create with new name
           const newName = prompt('Enter a new name for this treatment:', uploadedPreset.name + ' Copy');
           if (!newName || !newName.trim()) {
             showToast('Upload cancelled');
@@ -925,13 +1119,9 @@ function uploadSinglePreset(e) {
       }
       
       try {
-        // Save the preset
         await ajax('/save-preset', 'POST', JSON.stringify(uploadedPreset));
-        
-        // Reload the preset list
         await loadList(uploadedPreset.id);
         
-        // Switch to the uploaded preset
         const newIndex = presets.findIndex(p => p.id === uploadedPreset.id);
         if (newIndex >= 0) {
           const presetSel = qs('#presetSel');
@@ -942,9 +1132,7 @@ function uploadSinglePreset(e) {
           curIdx = newIndex;
         }
         
-        // Update home view as well
         updateHomePresetList();
-        
         showToast(`Treatment "${uploadedPreset.name}" uploaded successfully`);
         
       } catch (error) {
@@ -959,11 +1147,11 @@ function uploadSinglePreset(e) {
   };
   
   reader.readAsText(file);
-  e.target.value = ''; // Clear the file input for next upload
+  e.target.value = '';
 }
 
 window.addEventListener('load', () => {
-  const homePlayPauseBtn = qs('#homePlayPauseBtn');  // Single toggle button
+  const homePlayPauseBtn = qs('#homePlayPauseBtn');
   const homeStopBtn = qs('#homeStopBtn');
   const toggleSlidersBtn = qs('#toggleSlidersBtn');
   const playSelectedBtn = qs('#playSelectedBtn');
@@ -983,7 +1171,6 @@ window.addEventListener('load', () => {
     let lastSent = -1;
     el.addEventListener("input", e => {
       const v = parseInt(e.target.value, 10);
-      // only send if value actually changes significantly
       if (v !== lastSent) {
         sendUserControlUpdate(controlName, v);
         lastSent = v;
@@ -996,17 +1183,14 @@ window.addEventListener('load', () => {
     });
   }
 
-  // Set up play/pause toggle button
   if (homePlayPauseBtn) {
     homePlayPauseBtn.onclick = togglePlayPause;
   }
   
-  // Set up stop button
   if (homeStopBtn) {
     homeStopBtn.onclick = stopTreatment;
   }
 
-  // Set up treatment selection change handler
   handleTreatmentSelectionChange();
 
   if (toggleSlidersBtn) {
@@ -1036,8 +1220,6 @@ window.addEventListener('load', () => {
   loadList();
 });
 
-// Replace the stub functions at the bottom of the script with these implementations:
-
 async function duplicatePreset() {
   if (curIdx < 0) { 
     showToast('No preset selected'); 
@@ -1051,20 +1233,18 @@ async function duplicatePreset() {
     return;
   }
   
-  // Create duplicate with new ID and name
   const duplicate = {
     id: 'preset-' + Date.now(),
     name: newName.trim(),
     description: currentPreset.description || '',
     category: currentPreset.category || '',
-    rows: currentPreset.rows.map(row => ({...row})) // Deep copy rows
+    rows: currentPreset.rows.map(row => ({...row}))
   };
   
   try {
     await ajax('/save-preset', 'POST', JSON.stringify(duplicate));
     await loadList(duplicate.id);
     
-    // Switch to the duplicated preset
     const newIndex = presets.findIndex(p => p.id === duplicate.id);
     if (newIndex >= 0) {
       const presetSel = qs('#presetSel');
@@ -1089,7 +1269,6 @@ async function delPreset() {
   
   const currentPreset = presets[curIdx];
   
-  // Prevent deletion of the last preset
   if (presets.length <= 1) {
     showToast('Cannot delete the last preset');
     return;
@@ -1103,7 +1282,6 @@ async function delPreset() {
     await ajax('/delete-preset', 'POST', JSON.stringify({id: currentPreset.id}));
     await loadList();
     
-    // Select the first available preset
     if (presets.length > 0) {
       const presetSel = qs('#presetSel');
       if (presetSel) {
@@ -1132,7 +1310,7 @@ function backupPresets() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     
-    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const timestamp = new Date().toISOString().split('T')[0];
     a.href = url;
     a.download = `sonixscape_backup_${timestamp}.json`;
     
@@ -1157,7 +1335,6 @@ function restorePresets(event) {
     try {
       const backupData = JSON.parse(evt.target.result);
       
-      // Validate backup format
       if (!backupData.presets || !Array.isArray(backupData.presets)) {
         showToast('Invalid backup file format');
         return;
@@ -1170,7 +1347,6 @@ function restorePresets(event) {
         return;
       }
       
-      // Ask user for confirmation
       const confirmMsg = `This will restore ${presetsToRestore.length} presets. ` +
                         `This will overwrite any existing presets with matching names. Continue?`;
       
@@ -1178,11 +1354,9 @@ function restorePresets(event) {
         return;
       }
       
-      // Save all presets from backup
       let successCount = 0;
       for (const preset of presetsToRestore) {
         try {
-          // Ensure preset has required fields
           if (!preset.id) preset.id = 'preset-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
           if (!preset.name) preset.name = 'Restored Preset';
           if (!preset.rows) preset.rows = Array.from({length: ROWS}, () => ({...DEFAULT_ROW}));
@@ -1194,9 +1368,7 @@ function restorePresets(event) {
         }
       }
       
-      // Reload the preset list
       await loadList();
-      
       showToast(`Restored ${successCount} of ${presetsToRestore.length} presets`);
       
     } catch (error) {
@@ -1206,10 +1378,9 @@ function restorePresets(event) {
   };
   
   reader.readAsText(file);
-  event.target.value = ''; // Clear the file input
+  event.target.value = '';
 }
 
-// Add this function to handle play/pause toggle:
 function togglePlayPause() {
   const playPauseBtn = qs('#homePlayPauseBtn');
   const selectedIdx = +qs('#homePresetSel').value;
@@ -1218,7 +1389,6 @@ function togglePlayPause() {
 
   if (!playPauseBtn) return;
 
-  // If currently playing ? pause
   if (isPlaying) {
     console.log('[TOGGLE] Sending pause request');
     send({ action: 'pause' });
@@ -1235,7 +1405,6 @@ function togglePlayPause() {
     return;
   }
 
-  // Not playing ? start or resume
   if (selectedIdx < 0 || !presets[selectedIdx]) {
     showToast('No treatment selected');
     return;
@@ -1252,24 +1421,19 @@ function togglePlayPause() {
       treatmentIndex: selectedIdx,
       rows: selectedTreatment.rows
     };
-    // Only send resumeState if it's a complete snapshot
     if (currentTreatmentState && currentTreatmentState.row_data) {
       payload.resumeState = currentTreatmentState;
     }
     send(payload);
     showToast(`Resuming: ${selectedTreatment.name}`);
   } else {
-    // Fresh start
     let rowsToPlay;
     if (qs('#homeView').classList.contains('active')) {
-      // Home view ? scale by Session slider
       rowsToPlay = scaleRowsBySession(normalizeRowTimes(selectedTreatment.rows));
     } else {
-      // Manager view ? use minutes directly, convert to seconds
       rowsToPlay = selectedTreatment.rows.map(r => ({ ...r, time: (r.time || 0) * 60 }));
     }
 
-    // If you want to merge in live user strength values too:
     const userVals = getUserStrengthValues();
     rowsToPlay = rowsToPlay.map(r => ({ ...r, ...userVals }));
 
@@ -1278,7 +1442,6 @@ function togglePlayPause() {
     showToast(`Playing: ${selectedTreatment.name}`);
   }
 
-  // Update UI state
   isPlaying = true;
   isPaused = false;
   lastSelectedTreatment = selectedIdx;
@@ -1294,13 +1457,11 @@ function togglePlayPause() {
 function stopTreatment() {
   send({action: 'stop'});
   
-  // Reset all state
   isPlaying = false;
   isPaused = false;
   currentTreatmentState = null;
   clearPlayingHighlight();
   
-  // Reset button to play state
   const playPauseBtn = qs('#homePlayPauseBtn');
   if (playPauseBtn) {
     playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
@@ -1313,13 +1474,9 @@ function stopTreatment() {
   showToast('Treatment stopped');
 }
 
-// Update the WebSocket message handler to handle pause/resume states:
-// Replace the existing WebSocket message handler with this enhanced version:
-
 function enhancedWebSocketHandler(ev) {
   const msg = String(ev.data || '');
 
-  // NEW: reflect play started from Manager ("Play All" / "Play Selected")
   if (msg === 'ack:play-all' || msg === 'ack:play-selected') {
     isPaused = false;
     isPlaying = true;
@@ -1328,16 +1485,78 @@ function enhancedWebSocketHandler(ev) {
     if (playPauseBtn) {
       playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
       playPauseBtn.title = 'Pause';
-      playPauseBtn.classList.remove('pause-btn'); // yellow
-      playPauseBtn.classList.add('play-btn');     // green
+      playPauseBtn.classList.remove('pause-btn');
+      playPauseBtn.classList.add('play-btn');
     }
 
     updateStatus('Playing', 'playing');
     return;
   }
+  
+  if (msg.startsWith('ack:bt-list-paired:')) {
+    try {
+      const jsonStr = msg.substring('ack:bt-list-paired:'.length);
+      const data = JSON.parse(jsonStr);
+      const devices = data.devices || [];
+      const listDiv = document.getElementById('btDeviceList');
+      
+      if (devices.length === 0) {
+        listDiv.innerHTML = '<p style="color:#666;text-align:center;">No paired devices</p>';
+      } else {
+        listDiv.innerHTML = devices.map(dev => `
+          <div class="bt-device-item" style="background:${dev.connected ? '#d4edda' : '#fff'};border-left:4px solid ${dev.connected ? '#28a745' : '#ddd'}">
+            <div class="bt-device-info">
+              <div class="bt-device-name">
+                ${dev.name}
+                ${dev.connected ? '<span style="color:#28a745;font-weight:bold;margin-left:8px">● ACTIVE</span>' : ''}
+              </div>
+              <div class="bt-device-mac">${dev.mac}</div>
+            </div>
+            <button onclick="removeBTDevice('${dev.mac}', '${dev.name}')" class="btn-remove">Remove</button>
+          </div>
+        `).join('');
+      }
+    } catch (e) {
+      console.error('[BT] Error parsing device list:', e);
+      document.getElementById('btDeviceList').innerHTML = '<p style="color:red;">Error loading devices</p>';
+    }
+    return;
+  }
 
-  // ? PAUSE (remove the stale-guard)
+  if (msg.startsWith('ack:bt-remove-device:')) {
+    const mac = msg.split(':')[2];
+    showToast(`Device ${mac} removed`);
+    refreshBluetoothList();
+    return;
+  }
+  
+  if (msg === 'ack:wifi-stream-start') {
+    const statusText = document.getElementById('wifiStreamStatusText');
+    if (statusText) {
+      statusText.textContent = 'Active - Receiving Data';
+      statusText.className = 'active';
+    }
+    return;
+  }
+  
+  if (msg === 'ack:wifi-stream-stop') {
+    const statusText = document.getElementById('wifiStreamStatusText');
+    if (statusText) {
+      statusText.textContent = 'Inactive';
+      statusText.className = '';
+    }
+    return;
+  }
+  
+  if (msg.startsWith('error:wifi-stream')) {
+    console.error('[WIFI] Error:', msg);
+    showToast('WiFi stream error - check console');
+    return;
+  }
+  
   if (msg === 'ack:pause' || msg === 'pause:complete') {
+    if (isPlaying === true) return;
+
     isPaused = true;
     isPlaying = false;
 
@@ -1349,8 +1568,8 @@ function enhancedWebSocketHandler(ev) {
     if (playPauseBtn) {
       playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
       playPauseBtn.title = 'Resume';
-      playPauseBtn.classList.remove('play-btn'); // green
-      playPauseBtn.classList.add('pause-btn');   // yellow
+      playPauseBtn.classList.remove('play-btn');
+      playPauseBtn.classList.add('pause-btn');
     }
 
     updateStatus('Paused');
@@ -1374,30 +1593,6 @@ function enhancedWebSocketHandler(ev) {
     return;
   }
 
-  if (msg === 'ack:pause' || msg === 'pause:complete') {
-    // Ignore stale pause if we already resumed
-    if (isPlaying === true) return;
-
-    isPaused = true;
-    isPlaying = false;
-
-    const selectedIdx = +qs('#homePresetSel').value;
-    lastSelectedTreatment = selectedIdx;
-    currentTreatmentState = { canResume: true };
-
-    const playPauseBtn = qs('#homePlayPauseBtn');
-    if (playPauseBtn) {
-      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
-      playPauseBtn.title = 'Resume';
-      playPauseBtn.classList.remove('play-btn');
-      playPauseBtn.classList.add('pause-btn');
-    }
-
-    updateStatus('Paused');
-    return;
-  }
-
-  // FIXED: when resuming, flip the icon back to green Pause
   if (msg === 'ack:resume' || msg === 'resume:complete') {
     isPaused = false;
     isPlaying = true;
@@ -1406,8 +1601,8 @@ function enhancedWebSocketHandler(ev) {
     if (playPauseBtn) {
       playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
       playPauseBtn.title = 'Pause';
-      playPauseBtn.classList.remove('pause-btn'); // yellow
-      playPauseBtn.classList.add('play-btn');     // green
+      playPauseBtn.classList.remove('pause-btn');
+      playPauseBtn.classList.add('play-btn');
     }
 
     updateStatus('Playing', 'playing');
@@ -1417,7 +1612,7 @@ function enhancedWebSocketHandler(ev) {
   if (msg.startsWith('highlight:')) {
     const idx = parseInt(msg.split(':')[1], 10);
     if (!isNaN(idx)) {
-      highlightRowUI(idx);   // apply yellow background
+      highlightRowUI(idx);
     }
     return;
   }
@@ -1450,7 +1645,6 @@ function sendUserControlUpdate(key, value) {
   }
 }
 
-// Update the treatment selector change handler:
 function handleTreatmentSelectionChange() {
   const homePresetSel = qs('#homePresetSel');
   if (!homePresetSel) return;
@@ -1458,7 +1652,6 @@ function handleTreatmentSelectionChange() {
   homePresetSel.addEventListener('change', () => {
     const selectedIdx = +homePresetSel.value;
     
-    // If a different treatment is selected while paused, reset pause state
     if (isPaused && lastSelectedTreatment !== selectedIdx) {
       isPaused = false;
       currentTreatmentState = null;
@@ -1484,9 +1677,17 @@ function getUserStrengthValues() {
   };
 }
 
-// Call this function in the window.addEventListener('load') section
-// Add this line at the end of the load event listener:
-// setupPreviewModal();
+window.onclick = function(event) {
+  const wifiModal = document.getElementById('wifiStreamModal');
+  if (event.target === wifiModal) {
+    closeWiFiStreamModal();
+  }
+  
+  const btModal = document.getElementById('btModal');
+  if (event.target === btModal) {
+    closeBluetoothModal();
+  }
+};
 </script>
 </body>
 </html>
