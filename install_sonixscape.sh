@@ -1,3 +1,4 @@
+
 #!/bin/bash
 set -euo pipefail
 
@@ -221,6 +222,8 @@ Requires=bluetooth.service
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/btmgmt bondable on
+ExecStartPre=/usr/bin/btmgmt io-cap 3
 ExecStart=/usr/local/bin/bt-agent-setup.py
 Restart=on-failure
 RestartSec=5
@@ -256,7 +259,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 15
-ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=1000000 --pcm-period-time=250000 -D hw:0,0 00:00:00:00:00:00
+ExecStart=/usr/bin/bluealsa-aplay --pcm-buffer-time=250000 --pcm-period-time=50000 -D plughw:Loopback,0 00:00:00:00:00:00
 Restart=always
 RestartSec=3
 User=root
