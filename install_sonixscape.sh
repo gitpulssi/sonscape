@@ -88,7 +88,7 @@ cd "$SONIX_DIR"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip wheel
-pip install flask websockets pyalsaaudio sounddevice numpy
+pip install flask websockets pyalsaaudio sounddevice numpy scipy
 deactivate
 
 # ---------- webui config ----------
