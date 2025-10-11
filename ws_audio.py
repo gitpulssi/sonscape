@@ -231,7 +231,7 @@ class SineRowPlayer:
                 'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
                 '--period-size=1200',
-                '--buffer-size=14400'
+                '--buffer-size=2400'
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -482,7 +482,7 @@ class SineRowPlayer:
                 'aplay', '-D', alsa_dev,
                 '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
                 '--period-size=1200',
-                '--buffer-size=14400'
+                '--buffer-size=2400'
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
