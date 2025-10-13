@@ -112,10 +112,12 @@ class SineRowPlayer:
         self.bt_read_thread = None
         self.bt_read_running = False
         
-        # WiFi streaming mode
+        # WiFi streaming mode with latency control
         self.wifi_stream_enabled = False
-        self.wifi_audio_queue = queue.Queue(maxsize=100)  # Large buffer for continuous streaming
+        self.wifi_audio_queue = queue.Queue(maxsize=10)  # REDUCED from 100 to 10 for lower latency
         self.wifi_stream_underruns = 0
+        self.wifi_stream_target_latency = 3  # Target 3 frames of buffering
+        self.wifi_stream_last_stats = time.perf_counter()
 
         # Sequence state
         self.sequence_rows = None
@@ -218,32 +220,32 @@ class SineRowPlayer:
         return env
         
     def _init_alsa_output(self):
-        try:
-            # If ALSA output is already running, don't restart it
-            if hasattr(self, '_alsa_process') and self._alsa_process:
-                if self._alsa_process.poll() is None:  # Still running
-                    print(f"[ALSA] Output already active, reusing existing process")
-                    return True
+            try:
+                # If ALSA output is already running, don't restart it
+                if hasattr(self, '_alsa_process') and self._alsa_process:
+                    if self._alsa_process.poll() is None:  # Still running
+                        print(f"[ALSA] Output already active, reusing existing process")
+                        return True
 
-            # Only start new process if needed
-            alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
-            self._alsa_process = subprocess.Popen([
-                'aplay', '-D', alsa_dev,
-                '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
-                '--period-size=1200',
-                '--buffer-size=2400'
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            bufsize=0)
+                # Only start new process if needed
+                alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
+                self._alsa_process = subprocess.Popen([
+                    'aplay', '-D', alsa_dev,
+                    '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
+                    '--period-size=1200',
+                    '--buffer-size=2400'
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                bufsize=0)
 
-            print(f"[ALSA] Using output device: {alsa_dev}")
-            return True
+                print(f"[ALSA] Using output device: {alsa_dev}")
+                return True
 
-        except Exception as e:
-            print(f"[ALSA] Failed to start: {e}")
-            return False
+            except Exception as e:
+                print(f"[ALSA] Failed to start: {e}")
+                return False
  
     def _generate_drum_env(self, mod_freq, frames, attack_ms, decay_ms, burst_len=1, burst_gap=1):
         """Envelope with bursts: fast attack, exponential decay"""
@@ -280,6 +282,27 @@ class SineRowPlayer:
             # WiFi streaming mode - use external audio
             if self.wifi_stream_enabled:
                 try:
+                    # Check queue depth and drop frames if too far behind
+                    queue_depth = self.wifi_audio_queue.qsize()
+                    
+                    # Print stats every 2 seconds
+                    now = time.perf_counter()
+                    if now - self.wifi_stream_last_stats >= 2.0:
+                        latency_ms = (queue_depth * BLOCK / RATE) * 1000
+                        print(f"[WIFI] Queue depth: {queue_depth} frames ({latency_ms:.1f}ms latency)")
+                        self.wifi_stream_last_stats = now
+                    
+                    # If queue is too full, drop old frames to reduce latency
+                    while queue_depth > self.wifi_stream_target_latency:
+                        try:
+                            self.wifi_audio_queue.get_nowait()  # Drop oldest frame
+                            queue_depth -= 1
+                            if queue_depth == self.wifi_stream_target_latency:
+                                print(f"[WIFI] Dropped frames to maintain {self.wifi_stream_target_latency}-frame latency")
+                        except queue.Empty:
+                            break
+                    
+                    # Get the next frame
                     wifi_data = self.wifi_audio_queue.get(timeout=0.001)
                     if len(wifi_data) == frames * CHANNELS:
                         therapy_signal = wifi_data.reshape((frames, CHANNELS))
@@ -290,6 +313,7 @@ class SineRowPlayer:
                     self.wifi_stream_underruns += 1
                     if self.wifi_stream_underruns % 100 == 0:
                         print(f"[WIFI] Underruns: {self.wifi_stream_underruns}")
+                        
             else:
                 # Normal therapy generation
                 if self.pause_requested and not self.is_paused:
@@ -467,35 +491,7 @@ class SineRowPlayer:
         except Exception as e:
             print(f"[AUDIO] Generation error: {e}")
             return np.zeros((frames, CHANNELS), dtype=np.float32)
- 
-    def _generate_heartbeat_env(self, frames, bpm=60, ratio=0.25):
-        try:
-            # If ALSA output is already running, don't restart it
-            if hasattr(self, '_alsa_process') and self._alsa_process:
-                if self._alsa_process.poll() is None:  # Still running
-                    print(f"[ALSA] Output already active, reusing existing process")
-                    return True
-
-            # Only start new process if needed
-            alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
-            self._alsa_process = subprocess.Popen([
-                'aplay', '-D', alsa_dev,
-                '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
-                '--period-size=1200',
-                '--buffer-size=2400'
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            bufsize=0)
-
-            print(f"[ALSA] Using output device: {alsa_dev}")
-            return True
-
-        except Exception as e:
-            print(f"[ALSA] Failed to start: {e}")
-            return False
-
+                
     def _biquad_process_stereo(self, x_stereo, coeffs, state):
         """Process 2-ch block with biquad filter - OPTIMIZED vectorized version"""
         if coeffs is None:
@@ -907,18 +903,18 @@ class SineRowPlayer:
             self.last_notified_row = index
             
     def _write_all(self, data_bytes: bytes):
-        if not hasattr(self, "_alsa_process") or self._alsa_process is None:
-            return
-        mv = memoryview(data_bytes)
-        total = len(mv)
-        off = 0
-        while off < total:
-            if self._alsa_process.stdin.closed:
-                break
-            n = self._alsa_process.stdin.write(mv[off:])
-            if n is None:
-                continue
-            off += n
+            if not hasattr(self, "_alsa_process") or self._alsa_process is None:
+                return
+            mv = memoryview(data_bytes)
+            total = len(mv)
+            off = 0
+            while off < total:
+                if self._alsa_process.stdin.closed:
+                    break
+                n = self._alsa_process.stdin.write(mv[off:])
+                if n is None:
+                    continue
+                off += n
 
     def stop(self):
         print("[STOP] Stopping therapy playback (BT audio continues)")
@@ -952,6 +948,7 @@ class SineRowPlayer:
         print(f"[FADE] Starting fade-out ({FADE_TIME}s)")
 
     def _apply_fade(self, signal, frames):
+        """Apply fade envelope to signal - OPTIMIZED vectorized version without gaps"""
         if self.fade_direction == 0 and self.fade_samples_remaining <= 0:
             return signal
         
@@ -959,17 +956,27 @@ class SineRowPlayer:
         
         if self.fade_samples_remaining > 0:
             samples_to_process = min(frames, self.fade_samples_remaining)
-            for i in range(samples_to_process):
-                if self.fade_direction == 1:
-                    progress = (FADE_SAMPLES - self.fade_samples_remaining + i) / FADE_SAMPLES
-                    self.fade_multiplier = progress
-                elif self.fade_direction == -1:
-                    progress = (self.fade_samples_remaining - i) / FADE_SAMPLES
-                    self.fade_multiplier = progress
-                fade_envelope[i] = self.fade_multiplier
+            
+            # Calculate the starting progress for this block
+            if self.fade_direction == 1:
+                # Fade in: progress from current position
+                start_progress = (FADE_SAMPLES - self.fade_samples_remaining) / FADE_SAMPLES
+                # Vectorized calculation of fade envelope
+                progress_array = start_progress + np.arange(samples_to_process, dtype=np.float32) / FADE_SAMPLES
+                fade_envelope[:samples_to_process] = progress_array
+                self.fade_multiplier = progress_array[-1]
+                
+            elif self.fade_direction == -1:
+                # Fade out: progress from current position
+                start_progress = self.fade_samples_remaining / FADE_SAMPLES
+                # Vectorized calculation of fade envelope
+                progress_array = start_progress - np.arange(samples_to_process, dtype=np.float32) / FADE_SAMPLES
+                fade_envelope[:samples_to_process] = np.maximum(0.0, progress_array)
+                self.fade_multiplier = max(0.0, progress_array[-1])
             
             self.fade_samples_remaining -= samples_to_process
             
+            # Handle completion of fade
             if self.fade_samples_remaining <= 0:
                 if self.fade_direction == 1:
                     self.fade_multiplier = 1.0
@@ -977,16 +984,19 @@ class SineRowPlayer:
                     self.fade_multiplier = 0.0
                 self.fade_direction = 0
             
+            # Fill remaining samples with final multiplier value
             if samples_to_process < frames:
                 fade_envelope[samples_to_process:] = self.fade_multiplier
         else:
+            # No active fade, use constant multiplier
             fade_envelope[:] = self.fade_multiplier
         
+        # Apply envelope
         if signal.ndim == 2:
             return signal * fade_envelope[:, None]
         else:
             return signal * fade_envelope
-
+            
     def _generate_4_channel_audio(self, f0, fsweep, sspd, t0, tt_block, frames):
         """Generate 4-channel carrier audio WITHOUT phase offsets (all in-phase)"""
         dt = 1.0 / RATE
