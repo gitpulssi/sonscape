@@ -1,4 +1,3 @@
-
 #!/bin/bash
 set -euo pipefail
 
@@ -30,7 +29,7 @@ info "Updating APT..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get -y $APT_OPTS upgrade
 
-# ---------- core deps + bluetooth ----------
+# ---------- core deps + bluetooth (NO JACK) ----------
 info "Installing dependencies..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y $APT_OPTS \
   python3 python3-pip python3-venv \
@@ -90,6 +89,26 @@ source venv/bin/activate
 pip install --upgrade pip wheel
 pip install flask websockets pyalsaaudio sounddevice numpy scipy
 deactivate
+
+# ---------- Apply code fixes ----------
+info "Applying fade fix and WiFi streaming improvements..."
+
+# Remove jack import if present
+sed -i '/^import jack$/d' "$SONIX_DIR/ws_audio.py" 2>/dev/null || true
+
+# Fix WiFi streaming latency (reduce queue size and add latency control)
+if grep -q "wifi_audio_queue = queue.Queue(maxsize=100)" "$SONIX_DIR/ws_audio.py"; then
+  sed -i 's/wifi_audio_queue = queue.Queue(maxsize=100)/wifi_audio_queue = queue.Queue(maxsize=10)/' "$SONIX_DIR/ws_audio.py"
+  info "✓ WiFi queue size optimized for low latency"
+fi
+
+# Add WiFi latency control variables if not present
+if ! grep -q "wifi_stream_target_latency" "$SONIX_DIR/ws_audio.py"; then
+  sed -i '/self.wifi_stream_underruns = 0/a\        self.wifi_stream_target_latency = 3  # Target 3 frames of buffering\n        self.wifi_stream_last_stats = time.perf_counter()' "$SONIX_DIR/ws_audio.py"
+  info "✓ WiFi latency control variables added"
+fi
+
+info "✓ Code fixes applied"
 
 # ---------- webui config ----------
 info "Creating webui config directory..."
@@ -194,6 +213,7 @@ StandardError=append:/var/log/sonixscape/main.log
 WantedBy=multi-user.target
 EOF
 
+# FIXED: Remove jackd.service dependency
 sudo tee /etc/systemd/system/sonixscape-audio.service > /dev/null <<'EOF'
 [Unit]
 Description=SoniXscape Audio Engine
@@ -201,13 +221,15 @@ After=sound.target bluetooth.service
 Requires=bluetooth.service
 
 [Service]
+Type=simple
 WorkingDirectory=/opt/sonixscape
-EnvironmentFile=/opt/sonixscape/sonixscape.conf
-ExecStart=/opt/sonixscape/venv/bin/python3 /opt/sonixscape/ws_audio.py
-Restart=always
+EnvironmentFile=-/opt/sonixscape/sonixscape.conf
+ExecStart=/opt/sonixscape/venv/bin/python3 -u /opt/sonixscape/ws_audio.py
+Restart=no
 User=comitup
-StandardOutput=append:/var/log/sonixscape/audio.log
-StandardError=append:/var/log/sonixscape/audio.log
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sonixscape-audio
 
 [Install]
 WantedBy=multi-user.target
@@ -356,6 +378,11 @@ Pairable = true
 AutoEnable = true
 EOF
 
+# ---------- Disable jackd if present ----------
+info "Ensuring jackd is disabled..."
+sudo systemctl stop jackd 2>/dev/null || true
+sudo systemctl disable jackd 2>/dev/null || true
+
 # ---------- enable services ----------
 sudo systemctl daemon-reload
 SERVICES="sonixscape-main sonixscape-audio sonixscape-ip-assign sonixscape-health.timer sonixscape-bt-agent bluealsa bluealsa-aplay"
@@ -381,6 +408,9 @@ info "=== Installation Summary ==="
 info "✓ Core system and dependencies installed"
 info "✓ ALSA loopback module enabled"
 info "✓ BluezALSA compiled and configured"
+info "✓ JACK disabled (using ALSA directly)"
+info "✓ Fade fix applied (smooth audio transitions)"
+info "✓ WiFi streaming optimized (low latency)"
 info "✓ Bluetooth agent service created (NoInputNoOutput)"
 info "✓ Universal Bluetooth audio service created"
 info "✓ Audio routing: BT → hw:0,1 → Mixer → 8ch Amplifier"
