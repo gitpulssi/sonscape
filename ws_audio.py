@@ -112,13 +112,21 @@ class SineRowPlayer:
         self.bt_read_thread = None
         self.bt_read_running = False
         
-        # WiFi streaming mode with latency control
+        # WiFi streaming mode with adaptive jitter buffer
         self.wifi_stream_enabled = False
-        self.wifi_audio_queue = queue.Queue(maxsize=10)  # REDUCED from 100 to 10 for lower latency
+        self.wifi_audio_queue = queue.Queue(maxsize=20)
         self.wifi_stream_underruns = 0
-        self.wifi_stream_target_latency = 3  # Target 3 frames of buffering
+        self.wifi_stream_overruns = 0
+        self.wifi_stream_min_buffer = 2      # Very low latency - only 2 frames (50ms)
+        self.wifi_stream_target_latency = 3  # Target 3 frames (75ms)
+        self.wifi_stream_max_latency = 8     # Drop frames if above 8 (200ms)
         self.wifi_stream_last_stats = time.perf_counter()
-
+        self.wifi_stream_frames_received = 0
+        self.wifi_stream_frames_dropped = 0
+        self.wifi_stream_is_buffering = True
+        self.wifi_stream_last_frame = None
+        self.wifi_stream_emergency_buffer = []  # Keep 2-3 frames as emergency backup
+        
         # Sequence state
         self.sequence_rows = None
         self.current_row_index = 0
@@ -279,40 +287,80 @@ class SineRowPlayer:
             # Initialize therapy signal
             therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
             
-            # WiFi streaming mode - use external audio
+             # WiFi streaming mode - use external audio with adaptive buffering
             if self.wifi_stream_enabled:
                 try:
-                    # Check queue depth and drop frames if too far behind
                     queue_depth = self.wifi_audio_queue.qsize()
                     
-                    # Print stats every 2 seconds
-                    now = time.perf_counter()
-                    if now - self.wifi_stream_last_stats >= 2.0:
-                        latency_ms = (queue_depth * BLOCK / RATE) * 1000
-                        print(f"[WIFI] Queue depth: {queue_depth} frames ({latency_ms:.1f}ms latency)")
-                        self.wifi_stream_last_stats = now
-                    
-                    # If queue is too full, drop old frames to reduce latency
-                    while queue_depth > self.wifi_stream_target_latency:
-                        try:
-                            self.wifi_audio_queue.get_nowait()  # Drop oldest frame
-                            queue_depth -= 1
-                            if queue_depth == self.wifi_stream_target_latency:
-                                print(f"[WIFI] Dropped frames to maintain {self.wifi_stream_target_latency}-frame latency")
-                        except queue.Empty:
-                            break
-                    
-                    # Get the next frame
-                    wifi_data = self.wifi_audio_queue.get(timeout=0.001)
-                    if len(wifi_data) == frames * CHANNELS:
-                        therapy_signal = wifi_data.reshape((frames, CHANNELS))
+                    # Initial buffering phase - wait until we have minimum buffer
+                    if self.wifi_stream_is_buffering:
+                        if queue_depth >= self.wifi_stream_min_buffer:
+                            self.wifi_stream_is_buffering = False
+                            print(f"[WIFI] Buffering complete, starting playback with {queue_depth} frames")
+                        else:
+                            # Still buffering - output silence
+                            therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
+                            now = time.perf_counter()
+                            if now - self.wifi_stream_last_stats >= 2.0:
+                                print(f"[WIFI] Buffering... ({queue_depth}/{self.wifi_stream_min_buffer} frames)")
+                                self.wifi_stream_last_stats = now
+                            # Don't increment underruns during intentional buffering
                     else:
-                        print(f"[WIFI] Size mismatch: expected {frames*CHANNELS}, got {len(wifi_data)}")
-                        self.wifi_stream_underruns += 1
-                except queue.Empty:
-                    self.wifi_stream_underruns += 1
-                    if self.wifi_stream_underruns % 100 == 0:
-                        print(f"[WIFI] Underruns: {self.wifi_stream_underruns}")
+                        # Normal playback mode
+                        
+                        # Drop excess frames if queue is too full (prevents latency buildup)
+                        if queue_depth > self.wifi_stream_max_latency:
+                            frames_to_drop = queue_depth - self.wifi_stream_target_latency
+                            for _ in range(frames_to_drop):
+                                try:
+                                    self.wifi_audio_queue.get_nowait()
+                                    self.wifi_stream_frames_dropped += 1
+                                except queue.Empty:
+                                    break
+                            print(f"[WIFI] Dropped {frames_to_drop} frames (queue was {queue_depth})")
+                            queue_depth = self.wifi_audio_queue.qsize()
+                        
+                        # Print stats every 5 seconds
+                        now = time.perf_counter()
+                        if now - self.wifi_stream_last_stats >= 5.0:
+                            latency_ms = (queue_depth * BLOCK / RATE) * 1000
+                            total_frames = max(self.wifi_stream_frames_received, 1)
+                            drop_rate = (self.wifi_stream_frames_dropped / total_frames) * 100
+                            underrun_rate = (self.wifi_stream_underruns / total_frames) * 100
+                            print(f"[WIFI] Latency: {latency_ms:.1f}ms ({queue_depth} frames), "
+                                  f"Dropped: {drop_rate:.1f}%, Underruns: {underrun_rate:.1f}%")
+                            self.wifi_stream_last_stats = now
+                            self.wifi_stream_frames_received = 0
+                            self.wifi_stream_frames_dropped = 0
+                        
+                        # Check if buffer is running low - restart buffering if needed
+                        if queue_depth == 0:
+                            self.wifi_stream_is_buffering = True
+                            self.wifi_stream_underruns += 1
+                            therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
+                            print(f"[WIFI] Buffer empty, restarting buffering phase")
+                        else:
+                            # Try to get frame with short timeout
+                            try:
+                                wifi_data = self.wifi_audio_queue.get(timeout=0.010)  # 10ms timeout
+                                self.wifi_stream_frames_received += 1
+                                
+                                if len(wifi_data) == frames * CHANNELS:
+                                    therapy_signal = wifi_data.reshape((frames, CHANNELS))
+                                else:
+                                    print(f"[WIFI] Size mismatch: expected {frames*CHANNELS}, got {len(wifi_data)}")
+                                    therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
+                                    self.wifi_stream_underruns += 1
+                            except queue.Empty:
+                                # Buffer underrun - restart buffering
+                                self.wifi_stream_is_buffering = True
+                                self.wifi_stream_underruns += 1
+                                therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
+                                print(f"[WIFI] Underrun detected, restarting buffering")
+                                
+                except Exception as e:
+                    print(f"[WIFI] Error: {e}")
+                    therapy_signal = np.zeros((frames, CHANNELS), dtype=np.float32)
                         
             else:
                 # Normal therapy generation
