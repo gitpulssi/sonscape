@@ -435,12 +435,15 @@ class SineRowPlayer:
                                 print("[SEQ] Sequence complete")
                                 if self.ws_handler:
                                     self.ws_handler.queue_clear_highlight()
+                                    self.ws_handler._queue_message("playback:ended")
                                 self.row = None
                                 self.is_playing_sequence = False
                                 self.sequence_rows = None
                                 self._reset_state()
                         else:
                             print("[PLAY] Single row complete")
+                            if self.ws_handler:
+                                self.ws_handler._queue_message("playback:ended")  # ← ADD THIS LINE
                             self.row = None
                             self._reset_state()
 
@@ -1882,6 +1885,7 @@ async def monitor_device():
 async def highlight_sender():
     while True:
         await ws_handler.send_pending_highlights()
+        await ws_handler._process_queued_messages()  # ← ADD THIS LINE
         await asyncio.sleep(0.1)
 
 async def main():
