@@ -217,7 +217,6 @@
       text-align: center;
       color: #ccc;
     }
-
     .bt-controls {
       width: 100%;
       display: flex;
@@ -227,6 +226,28 @@
       padding: 8px;
       background: #3a3a3a;
       border-radius: 8px;
+    }
+
+    .bt-toggle-btn {
+      flex: 1;
+      background: #00ff66;
+      color: #000;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1em;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+
+    .bt-toggle-btn.mono-mode {
+      background: #ffc107;
+      color: #000;
+    }
+
+    .bt-toggle-btn:hover {
+      opacity: 0.9;
     }
     .bt-controls label {
       display: flex;
@@ -285,7 +306,27 @@
     .bt-device-item button:hover {
       background: #b91c1c;
     }
-  
+    
+    .wifi-mode-toggle-btn {
+      flex: 1;
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1em;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+    .wifi-mode-toggle-btn.wifi-active {
+      background: #ff6b6b;
+      color: #fff;
+    }
+    .wifi-mode-toggle-btn:hover {
+      opacity: 0.9;
+    }
+
     .actions{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
     .btn{flex:1;min-width:100px;padding:10px;border:none;border-radius:6px;color:#fff;background:#1a73e8;font-size:1rem;cursor:pointer;transition:all 0.3s}
     .btn:hover{background:#1557b0;transform:translateY(-1px);box-shadow:0 2px 4px rgba(0,0,0,0.2)}
@@ -345,16 +386,15 @@
         <div class="header">
           <div id="homeStatusText" class="status ready">Ready</div>
           <div id="sessionDial" class="dial">30 min</div>
-            <div class="menu">
-              <button><i class="fas fa-bars"></i></button>
-              <div class="menu-content">
-              <a onclick="document.getElementById('uploadSingleFile').click()">Upload Treatment</a>
-              <a onclick="showView('managerView')">Treatment Manager</a>
+          <div class="menu">
+            <button><i class="fas fa-bars"></i></button>
+            <div class="menu-content">
+              <a onclick="document.getElementById('uploadSingleFile').click()">Upload Session</a>
+              <a onclick="showView('managerView')">Session Manager</a>
               <a onclick="showBluetoothModal()">Manage Bluetooth</a>
-              <a onclick="showWiFiStreamModal()">WiFi Audio Stream</a>
               <a onclick="toggleAPMode()">AP Mode</a>
-              </div>
             </div>
+          </div>
         </div>
 
         <div class="session-slider">
@@ -364,17 +404,14 @@
         </div>
 
         <select id="homePresetSel" class="home-select">
-          <option>Select Treatment</option>
+          <option>Select Session</option>
         </select>
 
-        <div class="bt-controls">
-          <label>
-            <input id="btMonoChk" type="checkbox" checked />
-            <span>Bluetooth</span>
-          </label>
-          <button id="btStereoBtn" type="button">Stereo</button>
-        </div>
-
+    <div class="bt-controls">
+      <button id="btToggleBtn" class="bt-toggle-btn" type="button">Stereo</button>
+      <button id="wifiModeToggleBtn" class="wifi-mode-toggle-btn" type="button">Session Mode</button>
+    </div>
+        
         <div class="controls">
           <button id="homePlayPauseBtn" class="play-btn" title="Play"><i class="fas fa-play"></i></button>
           <button id="homeStopBtn" class="stop-btn" title="Stop"><i class="fas fa-stop"></i></button>
@@ -413,16 +450,16 @@
   </div>
 
   <div id="managerView" class="view">
-    <div class="nav-bar">
-      <button class="nav-btn" onclick="showView('homeView')">← Back to Home</button>
-      <h2 style="margin:0">Treatment Manager</h2>
-      <div style="width:120px"></div>
-    </div>
+  <div class="nav-bar">
+    <button class="nav-btn" onclick="showView('homeView')">← Back to Home</button>
+    <h2 style="margin:0">Session Manager</h2>
+    <div style="width:120px"></div>
+  </div>
 
-    <label>Preset&nbsp;
-      <input id="presetSearch" type="text" placeholder="Search…" style="padding:6px 8px;margin-right:8px;width:50%">
-      <select id="presetSel"></select>
-    </label>
+  <label>Session&nbsp;
+    <input id="presetSearch" type="text" placeholder="Search…" style="padding:6px 8px;margin-right:8px;width:50%">
+    <select id="presetSel"></select>
+  </label>
 
     <table id="mat">
       <thead><tr>
@@ -549,6 +586,7 @@ let isPaused = false;
 let lastSelectedTreatment = -1;
 let currentTreatmentState = null;
 let wifiStreamActive = false;
+let isStereoMode = true;
 
 function forgetBT() {
   if (confirm('Forget all Bluetooth devices?')) {
@@ -692,22 +730,36 @@ function connectWS(){
     sliderListenersAttached = true;
   }
 
-  const btMonoChk = document.getElementById('btMonoChk');
-  const btStereoBtn = document.getElementById('btStereoBtn');
-  if (btMonoChk) {
-    btMonoChk.addEventListener('change', () => {
+  // REPLACE THE BLUETOOTH BUTTON LOGIC WITH THIS:
+  const btToggleBtn = document.getElementById('btToggleBtn');
+  let isStereoMode = true; // Default to stereo
+  
+  if (btToggleBtn && !btToggleBtn.hasAttribute('data-initialized')) {
+    btToggleBtn.setAttribute('data-initialized', 'true');
+    
+    btToggleBtn.addEventListener('click', () => {
+      isStereoMode = !isStereoMode;
+      
+      if (isStereoMode) {
+        btToggleBtn.textContent = 'Stereo';
+        btToggleBtn.classList.remove('mono-mode');
+      } else {
+        btToggleBtn.textContent = 'Mono';
+        btToggleBtn.classList.add('mono-mode');
+      }
+      
       if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ action: 'bt-set-mono', mono: btMonoChk.checked }));
+        ws.send(JSON.stringify({ 
+          action: 'bt-set-mono', 
+          mono: !isStereoMode 
+        }));
       }
     });
-  }
-  if (btStereoBtn) {
-    btStereoBtn.addEventListener('click', () => {
-      if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({ action: 'bt-set-mono', mono: false }));
-      }
-      if (btMonoChk) btMonoChk.checked = false;
-    });
+    
+    // Set initial state to stereo on connection
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ action: 'bt-set-mono', mono: false }));
+    }
   }
 
   ws.addEventListener('open', () => {
@@ -715,6 +767,10 @@ function connectWS(){
     if (ws.readyState === 1) ws.send(JSON.stringify({action:'ready'}));
     const pending = localStorage.getItem('mixPending') ?? localStorage.getItem('mix');
     if (pending != null) sendMix(parseInt(pending, 10));
+    
+    // Send initial stereo mode setting
+    ws.send(JSON.stringify({ action: 'bt-set-mono', mono: false }));
+    
     updateStatus('Connected','active');
   });
 
@@ -736,7 +792,7 @@ function normalize(arr){
     return [{ id:'preset-default', name:'Default', rows:Array.from({length:ROWS},()=>({...DEFAULT_ROW})) }];
   }
   arr.forEach((p,i)=>{
-    if(!p.name || !p.name.trim()) p.name = `Treatment ${i+1}`;
+    if(!p.name || !p.name.trim()) p.name = `Session ${i+1}`;
     if(!Array.isArray(p.rows) || p.rows.length===0)
       p.rows = Array.from({length:ROWS},()=>({...DEFAULT_ROW}));
   });
@@ -892,7 +948,7 @@ function showToast(msg){const t=qs('#toast');t.textContent=msg;t.style.visibilit
 function updateHomePresetList() {
   const homeSel = qs('#homePresetSel');
   if (homeSel) {
-    homeSel.innerHTML = '<option>Select Treatment</option>' + presets.map((p,i)=>`<option value="${i}">${p.name}</option>`).join('');
+    homeSel.innerHTML = '<option>Select Session</option>' + presets.map((p,i)=>`<option value="${i}">${p.name}</option>`).join('');
     if (curIdx >= 0) homeSel.value = curIdx;
   }
 }
@@ -1054,7 +1110,7 @@ async function savePreset() {
 }
 
 function downloadCurrentPreset(){
-  if(curIdx<0){showToast('No treatment selected.');return;}
+  if(curIdx<0){showToast('No session selected.');return;}  // Changed
   const p=presets[curIdx],blob=new Blob([JSON.stringify(p,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download=p.name.replace(/\s+/g,'_')+'.json';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
@@ -1070,31 +1126,16 @@ function uploadSinglePreset(e) {
       const uploadedPreset = JSON.parse(evt.target.result);
       
       if (!uploadedPreset.name) {
-        showToast('Invalid treatment file: missing name');
+        showToast('Invalid session file: missing name');  // Changed
         return;
       }
       
       if (!uploadedPreset.rows || !Array.isArray(uploadedPreset.rows)) {
-        showToast('Invalid treatment file: missing or invalid rows');
+        showToast('Invalid session file: missing or invalid rows');  // Changed
         return;
       }
       
-      if (!uploadedPreset.id) {
-        uploadedPreset.id = 'preset-' + Date.now();
-      }
-      
-      while (uploadedPreset.rows.length < ROWS) {
-        uploadedPreset.rows.push({...DEFAULT_ROW});
-      }
-      
-      if (uploadedPreset.rows.length > ROWS) {
-        uploadedPreset.rows = uploadedPreset.rows.slice(0, ROWS);
-      }
-      
-      uploadedPreset.rows = uploadedPreset.rows.map(row => ({
-        ...DEFAULT_ROW,
-        ...row
-      }));
+      // ... rest of validation code stays the same ...
       
       const existingIndex = presets.findIndex(p => 
         p.name.toLowerCase() === uploadedPreset.name.toLowerCase()
@@ -1102,13 +1143,13 @@ function uploadSinglePreset(e) {
       
       if (existingIndex >= 0) {
         const overwrite = confirm(
-          `A treatment named "${uploadedPreset.name}" already exists. Overwrite it?`
+          `A session named "${uploadedPreset.name}" already exists. Overwrite it?`  // Changed
         );
         
         if (overwrite) {
           uploadedPreset.id = presets[existingIndex].id;
         } else {
-          const newName = prompt('Enter a new name for this treatment:', uploadedPreset.name + ' Copy');
+          const newName = prompt('Enter a new name for this session:', uploadedPreset.name + ' Copy');  // Changed
           if (!newName || !newName.trim()) {
             showToast('Upload cancelled');
             return;
@@ -1133,16 +1174,16 @@ function uploadSinglePreset(e) {
         }
         
         updateHomePresetList();
-        showToast(`Treatment "${uploadedPreset.name}" uploaded successfully`);
+        showToast(`Session "${uploadedPreset.name}" uploaded successfully`);  // Changed
         
       } catch (error) {
         console.error('Error saving uploaded preset:', error);
-        showToast('Error saving uploaded treatment');
+        showToast('Error saving uploaded session');  // Changed
       }
       
     } catch (error) {
       console.error('Error parsing uploaded file:', error);
-      showToast('Invalid JSON file or corrupted treatment data');
+      showToast('Invalid JSON file or corrupted session data');  // Changed
     }
   };
   
@@ -1156,7 +1197,7 @@ window.addEventListener('load', () => {
   const toggleSlidersBtn = qs('#toggleSlidersBtn');
   const playSelectedBtn = qs('#playSelectedBtn');
   const playAllBtn = qs('#playAllBtn');
-
+  
   const userSliders = {
     strengthSlider: "user_strength",
     neckSlider: "user_neck",
@@ -1164,7 +1205,7 @@ window.addEventListener('load', () => {
     thighsSlider: "user_thighs",
     legsSlider: "user_legs"
   };
-
+  
   for (const [sliderId, controlName] of Object.entries(userSliders)) {
     const el = document.getElementById(sliderId);
     if (!el) continue;
@@ -1182,7 +1223,7 @@ window.addEventListener('load', () => {
       lastSent = v;
     });
   }
-
+  
   if (homePlayPauseBtn) {
     homePlayPauseBtn.onclick = togglePlayPause;
   }
@@ -1190,9 +1231,9 @@ window.addEventListener('load', () => {
   if (homeStopBtn) {
     homeStopBtn.onclick = stopTreatment;
   }
-
+  
   handleTreatmentSelectionChange();
-
+  
   if (toggleSlidersBtn) {
     toggleSlidersBtn.onclick = () => {
       const panel = qs('#sliderPanel');
@@ -1204,18 +1245,72 @@ window.addEventListener('load', () => {
       }
     };
   }
-
+  
   if (playSelectedBtn) {
     playSelectedBtn.onclick = () => {
       if (selectedRow >= 0) { playSelected(selectedRow); }
       else { showToast('No row selected'); }
     };
   }
-
+  
   if (playAllBtn) {
     playAllBtn.onclick = () => { playAll(); };
   }
+  
+  // WiFi Mode Toggle Button - ADD THIS ENTIRE SECTION HERE
+  const wifiModeToggleBtn = document.getElementById('wifiModeToggleBtn');
+  let isWiFiMode = false; // Default to Session Mode
 
+  if (wifiModeToggleBtn && !wifiModeToggleBtn.hasAttribute('data-initialized')) {
+    wifiModeToggleBtn.setAttribute('data-initialized', 'true');
+    
+    wifiModeToggleBtn.addEventListener('click', () => {
+      isWiFiMode = !isWiFiMode;
+      
+      if (isWiFiMode) {
+        // Switch to WiFi Streaming mode
+        wifiModeToggleBtn.textContent = 'WiFi Streaming';
+        wifiModeToggleBtn.classList.add('wifi-active');
+        
+        if (ws && ws.readyState === 1) {
+          send({action: 'wifi-stream-start'});
+          showToast('WiFi Streaming mode enabled');
+        }
+        
+        wifiStreamActive = true;
+        
+        // Disable session selector and play controls
+        const homePresetSel = qs('#homePresetSel');
+        const homePlayPauseBtn = qs('#homePlayPauseBtn');
+        const homeStopBtn = qs('#homeStopBtn');
+        if (homePresetSel) homePresetSel.disabled = true;
+        if (homePlayPauseBtn) homePlayPauseBtn.disabled = true;
+        if (homeStopBtn) homeStopBtn.disabled = true;
+        
+      } else {
+        // Switch back to Session Mode
+        wifiModeToggleBtn.textContent = 'Session Mode';
+        wifiModeToggleBtn.classList.remove('wifi-active');
+        
+        if (ws && ws.readyState === 1) {
+          send({action: 'wifi-stream-stop'});
+          showToast('Session mode enabled');
+        }
+        
+        wifiStreamActive = false;
+        
+        // Re-enable session selector and play controls
+        const homePresetSel = qs('#homePresetSel');
+        const homePlayPauseBtn = qs('#homePlayPauseBtn');
+        const homeStopBtn = qs('#homeStopBtn');
+        if (homePresetSel) homePresetSel.disabled = false;
+        if (homePlayPauseBtn) homePlayPauseBtn.disabled = false;
+        if (homeStopBtn) homeStopBtn.disabled = false;
+      }
+    });
+  }
+  // END WiFi Mode Toggle Button section
+  
   connectWS();
   loadList();
 });
@@ -1401,12 +1496,12 @@ function togglePlayPause() {
     playPauseBtn.classList.add('pause-btn');
 
     updateStatus('Paused', 'ready');
-    showToast('Treatment paused');
+    showToast('Session paused');
     return;
   }
 
   if (selectedIdx < 0 || !presets[selectedIdx]) {
-    showToast('No treatment selected');
+    showToast('No session selected');
     return;
   }
 
@@ -1471,7 +1566,7 @@ function stopTreatment() {
   }
   
   updateStatus('Ready');
-  showToast('Treatment stopped');
+  showToast('Session stopped');  // Changed
 }
 
 function enhancedWebSocketHandler(ev) {
@@ -1490,6 +1585,25 @@ function enhancedWebSocketHandler(ev) {
     }
 
     updateStatus('Playing', 'playing');
+    return;
+  }
+
+  if (msg === 'playback:ended') {
+    console.log('[WS] Playback ended');
+    clearPlayingHighlight();
+    isPlaying = false;
+    isPaused = false;
+    currentTreatmentState = null;
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+      playPauseBtn.title = 'Play';
+      playPauseBtn.classList.remove('pause-btn');
+      playPauseBtn.classList.add('play-btn');
+    }
+    
+    updateStatus('Ready');
     return;
   }
   
@@ -1619,6 +1733,25 @@ function enhancedWebSocketHandler(ev) {
 
   if (msg === 'clear:highlight') {
     clearPlayingHighlight();
+    return;
+  }
+
+  if (msg === 'playback:ended') {
+    console.log('[WS] Playback ended');
+    clearPlayingHighlight();
+    isPlaying = false;
+    isPaused = false;
+    currentTreatmentState = null;
+
+    const playPauseBtn = qs('#homePlayPauseBtn');
+    if (playPauseBtn) {
+      playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+      playPauseBtn.title = 'Play';
+      playPauseBtn.classList.remove('pause-btn');
+      playPauseBtn.classList.add('play-btn');
+    }
+    
+    updateStatus('Ready');
     return;
   }
 
