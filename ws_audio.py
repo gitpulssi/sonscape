@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import sounddevice as sd, asyncio, os, time, math, numpy as np
+import sounddevice as sd, asyncio, os, errno, time, math, numpy as np
 import websockets, subprocess, sys, atexit, signal, json, fcntl, re
 import threading, queue
 from pathlib import Path
@@ -23,7 +23,23 @@ except ImportError:
     ALSA_AVAILABLE=False; print("[BT] ALSA audio not available - Bluetooth mixing disabled")
 
 # Single instance lock
-_lockfd=open("/tmp/ws_audio.lock","w")
+lock_path = os.path.expanduser("~/.ws_audio.lock")
+_lockfd = None
+try:
+    # create (or open) a per-user lock file
+    _lockfd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    # try to acquire an exclusive, non-blocking lock
+    fcntl.lockf(_lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    print(f"[LOCK] Using {lock_path}")
+except OSError as e:
+    # If lock is held by another instance, exit cleanly
+    if e.errno in (errno.EACCES, errno.EAGAIN):
+        print("[FATAL] Another ws_audio.py is already running; exiting.")
+        sys.exit(1)
+    # If any other problem (e.g., home not writable), just continue without a lock
+    print(f"[WARN] Lock disabled ({e}); continuing without single-instance guard.")
+    _lockfd = None
+    
 try: fcntl.flock(_lockfd,fcntl.LOCK_EX|fcntl.LOCK_NB)
 except OSError: print("[FATAL] Another ws_audio.py is already running; exiting."); sys.exit(1)
 
@@ -228,53 +244,45 @@ class SineRowPlayer:
         return env
         
     def _init_alsa_output(self):
-            try:
-                # If ALSA output is already running, don't restart it
-                if hasattr(self, '_alsa_process') and self._alsa_process:
-                    if self._alsa_process.poll() is None:  # Still running
-                        print(f"[ALSA] Output already active, reusing existing process")
-                        return True
+        try:
+            # If ALSA output is already running, don't restart it
+            if hasattr(self, '_alsa_process') and self._alsa_process:
+                if self._alsa_process.poll() is None:  # Still running
+                    print(f"[ALSA] Output already active, reusing existing process")
+                    return True
 
-                # Only start new process if needed
-                alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
-                self._alsa_process = subprocess.Popen([
-                    'aplay', '-D', alsa_dev,
-                    '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
-                    '--period-size=1200',
-                    '--buffer-size=2400'
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                bufsize=0)
+            # --- Main 8-channel playback (chair DAC) ---
+            alsa_dev = "plughw:CARD=ICUSBAUDIO7D,DEV=0"
+            self._alsa_process = subprocess.Popen([
+                'aplay', '-D', alsa_dev,
+                '-f', 'S16_LE', '-r', '48000', '-c', '8', '-t', 'raw',
+                '--period-size=1200',
+                '--buffer-size=2400'
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            bufsize=0)
 
-                print(f"[ALSA] Using output device: {alsa_dev}")
-                return True
+            # --- Secondary 2-channel loopback for Bluetooth mirror ---
+            # Using minimal buffer sizes for lowest latency (~10ms total)
+            lb_dev = "hw:Loopback,0,0"
+            self._alsa_process_lb = subprocess.Popen([
+                'aplay', '-D', lb_dev,
+                '-f', 'S16_LE', '-r', '48000', '-c', '2', '-t', 'raw',
+                '--period-size=256',    # ~5.3ms per period
+                '--buffer-size=512'     # ~10.7ms total buffer
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            bufsize=0)
 
-            except Exception as e:
-                print(f"[ALSA] Failed to start: {e}")
-                return False
- 
-    def _generate_drum_env(self, mod_freq, frames, attack_ms, decay_ms, burst_len=1, burst_gap=1):
-        """Envelope with bursts: fast attack, exponential decay"""
-        dt = 1.0 / RATE
-        t = np.arange(frames, dtype=np.float32) * dt
-        period = 1.0 / max(mod_freq, 0.1)
-        phi0 = self.mod_phase_accum
-        phi = phi0 + t
-        self.mod_phase_accum = (phi0 + frames * dt) % period
-        beat_time = (phi % period)
-        beat_index = np.floor((phi0 + t) / period).astype(int)
-        attack_t = attack_ms
-        decay_tau = decay_ms / 5.0
-        env = np.zeros_like(beat_time)
-        for i, (bt, bi) in enumerate(zip(beat_time, beat_index)):
-            if (bi % (burst_len + burst_gap)) < burst_len:
-                if bt < attack_t:
-                    env[i] = bt / attack_t
-                else:
-                    env[i] = np.exp(-(bt - attack_t) / decay_tau)
-        return env
+        except Exception as e:
+            print(f"[ALSA] Error initializing output: {e}")
+            self._alsa_process = None
+            self._alsa_process_lb = None
+            return False
      
     def _generate_therapy_audio(self, frames):
         """Generate therapy audio - BT read happens first for consistent timing"""
@@ -397,7 +405,7 @@ class SineRowPlayer:
                 if row and not self.is_paused:
                     dt = 1.0 / RATE
                     tt_block = np.arange(frames) * dt
-                    f0 = float(row.get("frequency", 20.0))
+                    f0 = min(float(row.get("frequency", 20.0)), 150.0)  # Limit to 150Hz max
                     fsweep = float(row.get("freqSweep", 0))
                     sspd = float(row.get("sweepSpeed", 0))
                     dur = float(row.get("time", 60))
@@ -405,16 +413,9 @@ class SineRowPlayer:
                     mode = int(row.get("mode", 0))
                     mod_val = float(row.get("modSpeed", 5))
                     
-                    # Logarithmic mapping: slider 1–100 → 0.03–10 Hz
+                    # Logarithmic mapping: slider 1-100 ? 0.03-10 Hz
                     f_min, f_max, N = 0.03, 10.0, 100
                     mod_freq = f_min * (f_max / f_min) ** ((mod_val - 1) / (N - 1))
-                    
-                    if mode in (8, 9):
-                        burst_len = max(1, int(round(phase / 22.5)))
-                        burst_gap = 1
-                    else:
-                        burst_len = None
-                        burst_gap = None
                         
                     current_time = time.perf_counter()
                     t0 = current_time - self.row_start_time
@@ -443,7 +444,7 @@ class SineRowPlayer:
                         else:
                             print("[PLAY] Single row complete")
                             if self.ws_handler:
-                                self.ws_handler._queue_message("playback:ended")  # ← ADD THIS LINE
+                                self.ws_handler._queue_message("playback:ended")  # ? ADD THIS LINE
                             self.row = None
                             self._reset_state()
 
@@ -455,33 +456,7 @@ class SineRowPlayer:
                         audio_outputs = self._generate_4_channel_audio(f0, fsweep, sspd, audio_t0, tt_block, frames)
 
                         # Apply modulation with phase control
-                        if mode in (8, 9) and mod_freq > 0:
-                            if mode == 8:
-                                amp_env = self._generate_drum_env(mod_freq, frames, attack_ms=0.005, decay_ms=0.100,
-                                                                  burst_len=burst_len, burst_gap=burst_gap)
-                            else:
-                                amp_env = self._generate_drum_env(mod_freq, frames, attack_ms=0.015, decay_ms=0.400,
-                                                                  burst_len=burst_len, burst_gap=burst_gap)
-                            # Apply phase offset to each of the 4 outputs
-                            modulated_outputs = np.zeros_like(audio_outputs)
-                            for output_idx in range(4):
-                                phase_offset_deg = phase * output_idx
-                                phase_offset_samples = int((phase_offset_deg / 360.0) * (1.0 / mod_freq) * RATE)
-                                shifted_env = np.roll(amp_env, phase_offset_samples)
-                                modulated_outputs[:, output_idx] = audio_outputs[:, output_idx] * shifted_env
-                                
-                        elif mode == 10 and mod_freq > 0:
-                            bpm = int(mod_freq * 60)
-                            amp_env = self._generate_heartbeat_env(frames, bpm=bpm, ratio=0.25)
-                            # Apply phase offset to each of the 4 outputs
-                            modulated_outputs = np.zeros_like(audio_outputs)
-                            for output_idx in range(4):
-                                phase_offset_deg = phase * output_idx
-                                phase_offset_samples = int((phase_offset_deg / 360.0) * (60.0 / bpm) * RATE)
-                                shifted_env = np.roll(amp_env, phase_offset_samples)
-                                modulated_outputs[:, output_idx] = audio_outputs[:, output_idx] * shifted_env
-                                
-                        elif mod_freq > 0:
+                        if mod_freq > 0:
                             # Sine wave modulation with phase control
                             w = 2 * np.pi * mod_freq
                             phi0 = self.mod_phase_accum
@@ -500,10 +475,7 @@ class SineRowPlayer:
                         else:
                             modulated_outputs = audio_outputs
 
-                        if mode in (8, 9, 10):
-                            speaker_signals = self._route_audio_to_speakers(modulated_outputs, 0)
-                        else:
-                            speaker_signals = self._route_audio_to_speakers(modulated_outputs, mode)
+                        speaker_signals = self._route_audio_to_speakers(modulated_outputs, mode)
 
                         matrix_master = int(row.get("strength", 5))
                         user_master = getattr(self, "user_strength", None)
@@ -537,6 +509,10 @@ class SineRowPlayer:
                 mixed_signal = therapy_signal * therapy_mix_gain
             
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
+            
+            # Store unfiltered BT audio for loopback (bypasses 200Hz filter for headphones)
+            self._bt_stereo_unfiltered = bt_stereo if self.bt_gain > 0.0 else None
+            
             return mixed_signal
             
         except Exception as e:
@@ -821,56 +797,10 @@ class SineRowPlayer:
         except Exception as direct_err:
             print(f"[BT] Direct CAPTURE not available ({direct_err}); trying Loopback")
 
-        # Loopback fallback
-        if not os.path.exists("/proc/asound/Loopback"):
-            print("[BT] Loopback device not present")
-            self.bt_input = None
-            self.bt_enabled = False
-            return False
-
-        try:
-            self._ba_proc = subprocess.Popen(
-                ["bluealsa-aplay", "-r", "48000", "-d", "plughw:Loopback,0", bt_mac],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT
-            )
-            print("[BT] Started bluealsa-aplay → plughw:Loopback,0 @48k")
-        except Exception as e:
-            print(f"[BT] Failed to start bluealsa-aplay: {e}")
-
-        loop_dev = "hw:Loopback,1,0"
-        for _ in range(10):
-            try:
-                cap = alsaaudio.PCM(
-                    type=alsaaudio.PCM_CAPTURE,
-                    mode=alsaaudio.PCM_NONBLOCK,  # NON-BLOCKING
-                    device=loop_dev,
-                    channels=2,
-                    rate=48000,
-                    format=alsaaudio.PCM_FORMAT_S16_LE,
-                    periodsize=BLOCK
-                )
-                self.bt_input = cap
-                self.bt_mac_current = bt_mac
-                self.bt_enabled = True
-                
-                # Clear ring buffer
-                with self.bt_ring_lock:
-                    self.bt_ring_write_pos = 0
-                    self.bt_ring_read_pos = 0
-                    self.bt_ring_fill = 0
-                
-                # Start read thread
-                self.bt_read_running = True
-                self.bt_read_thread = threading.Thread(target=self._bt_read_loop, daemon=True)
-                self.bt_read_thread.start()
-                
-                print(f"[BT] Loopback capture established on {loop_dev}")
-                return True
-            except Exception:
-                time.sleep(0.1)
-
-        print("[BT] Loopback capture failed")
+        # Loopback fallback - REMOVED
+        # We now write directly to loopback in the audio callback (_pure_audio_loop)
+        # This old code would conflict with the direct writing
+        print("[BT] Loopback fallback not needed - using direct loopback writing")
         self.bt_input = None
         self.bt_enabled = False
         return False
@@ -952,6 +882,22 @@ class SineRowPlayer:
         if self.ws_handler and index != self.last_notified_row:
             self.ws_handler.queue_highlight(index)
             self.last_notified_row = index
+
+    def _write_loopback(self, data_bytes: bytes):
+        """Write stereo PCM bytes to loopback aplay"""
+        if not hasattr(self, "_alsa_process_lb") or self._alsa_process_lb is None:
+            return
+        mv = memoryview(data_bytes)
+        total = len(mv)
+        off = 0
+        while off < total:
+            try:
+                n = self._alsa_process_lb.stdin.write(mv[off:])
+                if n is None:
+                    continue
+                off += n
+            except BrokenPipeError:
+                break
             
     def _write_all(self, data_bytes: bytes):
             if not hasattr(self, "_alsa_process") or self._alsa_process is None:
@@ -1113,6 +1059,18 @@ class SineRowPlayer:
                         int16_data = np.clip(mixed_signal, -1.0, 1.0)
                         int16_data = (int16_data * 32767.0).astype(np.int16, copy=False)
                         self._write_all(int16_data.tobytes())
+                        
+                        # --- Send ONLY unfiltered BT audio to loopback (headset should not hear therapy) ---
+                        # Headset feed gets ONLY Bluetooth music, bypassing 200Hz lowpass filter
+                        if hasattr(self, '_bt_stereo_unfiltered') and self._bt_stereo_unfiltered is not None:
+                            # Send full-bandwidth BT audio to headphones
+                            stereo = self._bt_stereo_unfiltered
+                            st_i16 = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False)
+                            self._write_loopback(st_i16.tobytes())
+                        else:
+                            # No BT audio - send silence to loopback
+                            silence = np.zeros((frames_per_callback, 2), dtype=np.int16)
+                            self._write_loopback(silence.tobytes())
                     else:
                         print("[AUDIO] ALSA process ended")
                         break
@@ -1362,28 +1320,219 @@ class WebSocketHandler:
                     try:
                         ok, out = self._btctl("devices", "Paired")
                         connected_macs = set(self._list_a2dp_macs())
-                        print(f"[BT] Found {len(connected_macs)} connected devices")  # ← ADD THIS LINE
-                        
+                        print(f"[BT] Found {len(connected_macs)} connected devices")
+
+                        devices = []
                         if ok:
                             macs = re.findall(r'Device\s+([0-9A-F:]{17})\s+(.+)', out or "", flags=re.I)
-                            print(f"[BT] Parsed {len(macs)} paired devices")  # ← ADD THIS LINE
-                            devices = []
+                            print(f"[BT] Parsed {len(macs)} paired devices")
+
                             for mac, name in macs:
+                                # Query details for this device
+                                ok_i, out_i = self._btctl("info", mac)
+                                # Keep only A2DP Source profile (phones/computers)
+                                if "Audio Source" not in (out_i or ""):
+                                    print(f"[BT] Skipping {name} ({mac}) - not an A2DP source")
+                                    continue
+
                                 devices.append({
                                     "mac": mac,
                                     "name": name.strip(),
                                     "connected": mac in connected_macs
                                 })
+
                             response = json.dumps({"devices": devices})
-                            print(f"[BT] Sending response: {response}")  # ← ADD THIS LINE
+                            print(f"[BT] Sending response: {response}")
                             await ws.send(f"ack:bt-list-paired:{response}")
                         else:
-                            print("[BT] bluetoothctl paired-devices failed")  # ← ADD THIS LINE
+                            print("[BT] bluetoothctl paired-devices failed")
                             await ws.send("ack:bt-list-paired:{\"devices\":[]}")
                     except Exception as e:
                         await ws.send("error:bt-list-paired")
                         print(f"[BT] list-paired failed: {e}")
-                        
+
+                # ---- ADDITIONAL BLUETOOTH / OUTPUT HANDLERS ----
+
+                elif action == "bt-scan-on":
+                    self._btctl("scan", "on")
+                    await ws.send("ack:bt-scan-on")
+
+                elif action == "bt-scan-off":
+                    self._btctl("scan", "off")
+                    await ws.send("ack:bt-scan-off")
+
+                elif action == "bt-disconnect-output":
+                    mac = data.get("mac")
+                    if not mac:
+                        await ws.send("error:bt-disconnect-output:no-mac")
+                    else:
+                        self._btctl("disconnect", mac)
+                        await ws.send(f"ack:bt-disconnect-output:{mac}")
+
+                elif action == "bt-forget-device":
+                    mac = data.get("mac")
+                    if not mac:
+                        await ws.send("error:bt-forget-device:no-mac")
+                    else:
+                        self._btctl("remove", mac)
+                        await ws.send(f"ack:bt-forget-device:{mac}")
+
+                elif action == "bt-list-outputs":
+                    print("[BT] Discovering Bluetooth devices via D-Bus...")
+                    try:
+                        import dbus, time
+
+                        bus = dbus.SystemBus()
+                        mgr = dbus.Interface(
+                            bus.get_object('org.bluez', '/'),
+                            'org.freedesktop.DBus.ObjectManager'
+                        )
+
+                        adapter_path = '/org/bluez/hci0'
+                        adapter = dbus.Interface(
+                            bus.get_object('org.bluez', adapter_path),
+                            'org.bluez.Adapter1'
+                        )
+
+                        # start discovery
+                        adapter.StartDiscovery()
+                        time.sleep(10)        # scan for 6 s
+                        objects = mgr.GetManagedObjects()
+                        adapter.StopDiscovery()
+
+                        devices = []
+                        for path, ifaces in objects.items():
+                            dev = ifaces.get('org.bluez.Device1')
+                            if not dev:
+                                continue
+                            # collect useful data
+                            devices.append({
+                                "mac": str(dev.get("Address")),
+                                "name": str(dev.get("Name", "")),
+                                "paired": bool(dev.get("Paired", False)),
+                                "connected": bool(dev.get("Connected", False)),
+                                "a2dp": "Audio Sink" in str(dev.get("UUIDs", []))
+                            })
+
+                        payload = json.dumps({"devices": devices})
+                        await ws.send("ack:bt-list-outputs:" + payload)
+                        print(f"[BT] Found {len(devices)} devices via D-Bus scan")
+
+                    except Exception as e:
+                        await ws.send("error:bt-list-outputs")
+                        print(f"[BT] D-Bus discovery failed: {e}")
+
+                elif action == "bt-connect-output":
+                    mac = data.get("mac")
+                    if not mac:
+                        await ws.send("error:bt-connect-output:no-mac")
+                        return
+
+                    print(f"[BT] Attempting to connect (and pair if needed) to {mac} via D-Bus")
+                    try:
+                        import dbus, time
+                        bus = dbus.SystemBus()
+
+                        # Path format used by BlueZ
+                        dev_path = "/org/bluez/hci0/dev_" + mac.replace(":", "_")
+
+                        mgr = dbus.Interface(bus.get_object('org.bluez', '/'),
+                                             'org.freedesktop.DBus.ObjectManager')
+                        objects = mgr.GetManagedObjects()
+
+                        if dev_path not in objects:
+                            print(f"[BT] Device {mac} not in object list, starting short discovery...")
+                            adapter = dbus.Interface(bus.get_object('org.bluez', '/org/bluez/hci0'),
+                                                     'org.bluez.Adapter1')
+                            adapter.StartDiscovery()
+                            time.sleep(5)
+                            adapter.StopDiscovery()
+                            objects = mgr.GetManagedObjects()
+
+                        if dev_path not in objects:
+                            print(f"[BT] Device {mac} still not found after discovery.")
+                            await ws.send("error:bt-connect-output:not-found")
+                            continue
+
+                        dev_obj = bus.get_object('org.bluez', dev_path)
+                        dev = dbus.Interface(dev_obj, 'org.bluez.Device1')
+
+                        # Pair if needed
+                        if not bool(objects[dev_path]['org.bluez.Device1'].get('Paired', False)):
+                            print(f"[BT] Pairing with {mac} ?")
+                            dev.Pair()
+                            time.sleep(2)
+
+                        # Trust device
+                        props = dbus.Interface(dev_obj, 'org.freedesktop.DBus.Properties')
+                        props.Set('org.bluez.Device1', 'Trusted', True)
+
+                        # Connect
+                        print(f"[BT] Connecting to {mac} ...")
+                        dev.Connect()
+                        await ws.send(f"ack:bt-connect-output:{mac}")
+                        print(f"[BT] Connected successfully to {mac}")
+
+                    except dbus.exceptions.DBusException as e:
+                        err = str(e)
+                        print(f"[BT] D-Bus connect failed: {err}")
+                        await ws.send("error:bt-connect-output:" + err)
+                    except Exception as e:
+                        print(f"[BT] Generic connect error: {e}")
+                        await ws.send("error:bt-connect-output")
+
+                elif action == "alsa-list-outputs":
+                    try:
+                        r = subprocess.run(["aplay","-L"], capture_output=True, text=True, timeout=4)
+                        pcms=[]
+                        cur=None
+                        for line in (r.stdout or "").splitlines():
+                            if not line.strip(): continue
+                            if not line.startswith("  "):
+                                cur={"id": line.strip(), "desc": ""}
+                                pcms.append(cur)
+                            else:
+                                if cur: cur["desc"]+=line.strip()+" "
+                        await ws.send("ack:alsa-list-outputs:"+json.dumps({"pcms":pcms}))
+                    except Exception as e:
+                        await ws.send("error:alsa-list-outputs")
+
+                elif action == "output-start":
+                    alias = data.get("alias")
+                    pcm   = data.get("pcm")
+                    if not alias or not pcm:
+                        await ws.send("error:output-start:missing")
+                    else:
+                        try:
+                            outdir = "/etc/sonixscape/outputs.d"
+                            os.makedirs(outdir, exist_ok=True)
+                            with open(os.path.join(outdir, f"{alias}.pcm"), "w") as f:
+                                f.write(pcm.strip()+"\n")
+                            subprocess.run(["systemctl","enable","--now",f"sonixscape-output@{alias}.service"], check=False)
+                            await ws.send(f"ack:output-start:{alias}")
+                        except Exception as e:
+                            await ws.send("error:output-start")
+
+                elif action == "output-stop":
+                    alias = data.get("alias")
+                    if not alias:
+                        await ws.send("error:output-stop:missing")
+                    else:
+                        subprocess.run(["systemctl","disable","--now",f"sonixscape-output@{alias}.service"], check=False)
+                        await ws.send(f"ack:output-stop:{alias}")
+
+                elif action == "output-forget":
+                    alias = data.get("alias")
+                    if not alias:
+                        await ws.send("error:output-forget:missing")
+                    else:
+                        subprocess.run(["systemctl","disable","--now",f"sonixscape-output@{alias}.service"], check=False)
+                        try:
+                            os.remove(f"/etc/sonixscape/outputs.d/{alias}.pcm")
+                        except Exception:
+                            pass
+                        await ws.send(f"ack:output-forget:{alias}")
+                       
                 elif action == "toggle-ap-mode":
                     try:
                         await ws.send("ack:toggle-ap-mode:noop")
@@ -1499,6 +1648,10 @@ class WebSocketHandler:
             print(f"[BT] Error during removal: {e}")
             return False
 
+    async def _delayed_scan_off(self):
+        await asyncio.sleep(8)
+        self._btctl("scan", "off")
+
     def _list_a2dp_macs(self):
         try:
             r = subprocess.run(
@@ -1547,6 +1700,7 @@ class WebSocketHandler:
 
     async def _bt_autoconnect_loop(self, mac: str | None):
         print(f"[BT] autoconnect loop started with MAC: {mac}")
+        self._btctl("scan", "on"); asyncio.create_task(self._delayed_scan_off())
         current_mac = None
         did_agent = False
         connection_failures = 0
@@ -1748,20 +1902,20 @@ class WebSocketHandler:
         return mac is None or str(mac).strip().lower() == "auto"
 
     def _apply_bt_gain(self, bt_gain: float):
-        path = str((Path.home() / "webui" / "mix.json"))
+        mix_path = Path("/opt/sonixscape/webui/mix.json")
         cur = {}
-        if os.path.exists(path):
+        if mix_path.exists():
             try:
-                with open(path) as f:
+                with open(mix_path) as f:
                     cur = json.load(f) or {}
             except Exception:
                 cur = {}
         cur["bt_gain"] = float(bt_gain)
-        with open(path, "w") as f:
+        with open(mix_path, "w") as f:
             json.dump(cur, f, indent=2)
         self._last_applied_bt_gain = bt_gain
         print(f"[MIX] Updated bt_gain={bt_gain}")
-            
+                
     def _graceful_stop(self):
         try:
             self.bt_enabled = False
@@ -1851,6 +2005,17 @@ def _release_audio():
         if ws_handler.player and ws_handler.player.bt_input:
             ws_handler.player.bt_input.close()
             ws_handler.player.bt_input = None
+
+        # --- Close secondary loopback process (if running) ---
+        if hasattr(ws_handler.player, "_alsa_process_lb") and ws_handler.player._alsa_process_lb:
+            try:
+                ws_handler.player._alsa_process_lb.stdin.close()
+                ws_handler.player._alsa_process_lb.terminate()
+                ws_handler.player._alsa_process_lb.wait(timeout=2)
+            except Exception:
+                pass
+            ws_handler.player._alsa_process_lb = None
+
     except Exception:
         pass
 
@@ -1885,7 +2050,7 @@ async def monitor_device():
 async def highlight_sender():
     while True:
         await ws_handler.send_pending_highlights()
-        await ws_handler._process_queued_messages()  # ← ADD THIS LINE
+        await ws_handler._process_queued_messages()  # ? ADD THIS LINE
         await asyncio.sleep(0.1)
 
 async def main():
