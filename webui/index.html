@@ -392,6 +392,7 @@
               <a onclick="document.getElementById('uploadSingleFile').click()">Upload Session</a>
               <a onclick="showView('managerView')">Session Manager</a>
               <a onclick="showBluetoothModal()">Manage Bluetooth</a>
+        <a onclick="showOutputModal()">Select Output</a>
               <a onclick="toggleAPMode()">AP Mode</a>
             </div>
           </div>
@@ -451,7 +452,7 @@
 
   <div id="managerView" class="view">
   <div class="nav-bar">
-    <button class="nav-btn" onclick="showView('homeView')">← Back to Home</button>
+    <button class="nav-btn" onclick="showView('homeView')">? Back to Home</button>
     <h2 style="margin:0">Session Manager</h2>
     <div style="width:120px"></div>
   </div>
@@ -509,7 +510,30 @@
       </div>
     </div>
   </div>
-  
+
+  <!-- === OUTPUT MODAL === -->
+  <div id="outputModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Outputs</h2>
+        <span class="close" onclick="closeOutputModal()">&times;</span>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-bottom:10px">
+        <button class="btn" onclick="refreshBtOutputs()">Scan BT</button>
+        <button class="btn" onclick="refreshBtOutputs(true)">Refresh BT</button>
+        <button class="btn" onclick="refreshWired()">List Wired</button>
+      </div>
+
+      <h3>Bluetooth</h3>
+      <div id="btOutputList" style="margin:10px 0;">Loading…</div>
+
+      <h3>Wired (USB / ALSA)</h3>
+      <div id="wiredList" style="margin:10px 0;">Click “List Wired”</div>
+    </div>
+  </div>
+  <!-- === END OUTPUT MODAL === -->
+ 
   <div id="wifiStreamModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -549,7 +573,7 @@
         </div>
         
         <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px;">
-          <h4 style="margin: 0 0 10px 0;">⚠️ Important Notes</h4>
+          <h4 style="margin: 0 0 10px 0;">?? Important Notes</h4>
           <ul style="margin: 5px 0; padding-left: 20px; font-size: 14px;">
             <li>This mode disables built-in therapy signal generation</li>
             <li>Bluetooth audio mixing still works</li>
@@ -569,11 +593,11 @@
 const fields = ['time','strength','frequency','freqSweep','sweepSpeed','neck','back','thighs','legs','modSpeed','phase','mode'];
 
 const sliderMinMax = {
-  time:{min:0,max:300}, strength:{min:0,max:9}, frequency:{min:1,max:200},
+  time:{min:0,max:300}, strength:{min:0,max:9}, frequency:{min:1,max:150},
   freqSweep:{min:0,max:20}, sweepSpeed:{min:0,max:9},
   neck:{min:0,max:9}, back:{min:0,max:9}, thighs:{min:0,max:9}, legs:{min:0,max:9},
   modSpeed:{min:1,max:100,step:1}, phase:{min:0,max:90},
-  mode:{min:0,max:10}
+  mode:{min:0,max:7}
 };
 const DEFAULT_ROW = {time:60,strength:5,frequency:100,freqSweep:5,sweepSpeed:1,neck:5,back:5,thighs:5,legs:5,modSpeed:1,phase:90,mode:0};
 const ROWS = 6;
@@ -1622,7 +1646,7 @@ function enhancedWebSocketHandler(ev) {
             <div class="bt-device-info">
               <div class="bt-device-name">
                 ${dev.name}
-                ${dev.connected ? '<span style="color:#28a745;font-weight:bold;margin-left:8px">● ACTIVE</span>' : ''}
+                ${dev.connected ? '<span style="color:#28a745;font-weight:bold;margin-left:8px">? ACTIVE</span>' : ''}
               </div>
               <div class="bt-device-mac">${dev.mac}</div>
             </div>
@@ -1636,7 +1660,7 @@ function enhancedWebSocketHandler(ev) {
     }
     return;
   }
-
+  
   if (msg.startsWith('ack:bt-remove-device:')) {
     const mac = msg.split(':')[2];
     showToast(`Device ${mac} removed`);
@@ -1755,6 +1779,54 @@ function enhancedWebSocketHandler(ev) {
     return;
   }
 
+  // --- Handle Bluetooth output list ---
+  if (msg.startsWith('ack:bt-list-outputs:')) {
+    const data = JSON.parse(msg.substring('ack:bt-list-outputs:'.length));
+    const div = document.getElementById('btOutputList');
+    const devices = data.devices || [];
+    if (!div) return;
+    if (devices.length === 0) {
+      div.innerHTML = '<p style="text-align:center;color:#666;">No Bluetooth outputs found.</p>';
+    } else {
+      div.innerHTML = devices.map(d => `
+        <div class="bt-device-item" style="background:${d.connected ? '#d4edda' : '#fff'};border-left:4px solid ${d.connected ? '#28a745' : '#ccc'}">
+          <div class="bt-device-info">
+            <div class="bt-device-name">${d.name}</div>
+            <div class="bt-device-mac">${d.mac}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            ${d.connected
+              ? `<button class="btn grey" onclick="disconnectBt('${d.mac}')">Disconnect</button>`
+              : `<button class="btn" onclick="connectBt('${d.mac}')">Connect</button>`}
+            <button class="btn danger" onclick="forgetBt('${d.mac}')">Forget</button>
+          </div>
+        </div>
+      `).join('');
+    }
+    return;
+  }
+
+  // --- Handle ALSA / wired output list ---
+  if (msg.startsWith('ack:alsa-list-outputs:')) {
+    const data = JSON.parse(msg.substring('ack:alsa-list-outputs:'.length));
+    const div = document.getElementById('wiredList');
+    if (!div) return;
+    const pcms = data.pcms || [];
+    if (pcms.length === 0) {
+      div.innerHTML = '<p style="text-align:center;color:#666;">No wired outputs detected.</p>';
+    } else {
+      div.innerHTML = pcms.map(p => `
+        <div class="bt-device-item">
+          <div class="bt-device-info">
+            <div class="bt-device-name">${p.id}</div>
+            <div class="bt-device-mac">${(p.desc || '').trim()}</div>
+          </div>
+          <button class="btn" onclick="startWired('WIRED_'+btoa(p.id).replace(/=/g,''), '${p.id}')">Use</button>
+        </div>
+      `).join('');
+    }
+    return;
+  }
   console.log('[WS] message:', msg);
 }
 
@@ -1821,6 +1893,30 @@ window.onclick = function(event) {
     closeBluetoothModal();
   }
 };
+
+// ---- Output modal helpers ----
+function showOutputModal(){
+  document.getElementById('outputModal').style.display='flex';
+  refreshBtOutputs(true);
+}
+function closeOutputModal(){
+  document.getElementById('outputModal').style.display='none';
+}
+function refreshBtOutputs(refreshOnly=false){
+  if (!refreshOnly) send({action:'bt-scan-on'});
+  send({action:'bt-list-outputs'});
+  if (!refreshOnly) setTimeout(()=>send({action:'bt-scan-off'}), 5000);
+}
+function refreshWired(){
+  send({action:'alsa-list-outputs'});
+}
+function connectBt(mac){ send({action:'bt-connect-output', mac}); }
+function disconnectBt(mac){ send({action:'bt-disconnect-output', mac}); }
+function forgetBt(mac){ if(confirm('Forget this device?')) send({action:'bt-forget-device', mac}); }
+function startWired(alias, pcm){ send({action:'output-start', alias, pcm}); }
+function stopOutput(alias){ send({action:'output-stop', alias}); }
+function forgetOutput(alias){ if(confirm('Remove this output mapping?')) send({action:'output-forget', alias}); }
+
 </script>
 </body>
 </html>
