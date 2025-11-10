@@ -45,6 +45,7 @@ except OSError: print("[FATAL] Another ws_audio.py is already running; exiting."
 
 # Constants
 RATE=48000; BLOCK=1200; CHANNELS=8; PORT=8081; DEVICE_NAME="ICUSBAUDIO7D"
+HEADSET_MAC="F4:4E:FD:01:F6:E9"  # Fosi Audio BT30D
 FADE_TIME=4.0; FADE_SAMPLES=int(FADE_TIME*RATE)
 CHANNEL_MAP={"neck":(0,1),"back":(2,3),"thighs":(4,5),"legs":(6,7)}
 MODE_ROUTING={
@@ -142,6 +143,11 @@ class SineRowPlayer:
         self.wifi_stream_is_buffering = True
         self.wifi_stream_last_frame = None
         self.wifi_stream_emergency_buffer = []  # Keep 2-3 frames as emergency backup
+        
+        # Headset output (Bluetooth A2DP transmission)
+        self.headset_process = None
+        self.headset_enabled = True  # Auto-enable headset output
+        self.headset_mac = HEADSET_MAC
         
         # Sequence state
         self.sequence_rows = None
@@ -245,6 +251,23 @@ class SineRowPlayer:
         
     def _init_alsa_output(self):
         try:
+            # --- Bluetooth headset output (A2DP sink) - initialize FIRST, before any early returns ---
+            if self.headset_enabled:
+                if not hasattr(self, 'headset_process') or self.headset_process is None or self.headset_process.poll() is not None:
+                    try:
+                        print(f"[HEADSET] Starting bluealsa-aplay for {self.headset_mac}")
+                        self.headset_process = subprocess.Popen([
+                            'aplay',
+                            '-D', f'bluealsa:SRV=org.bluealsa,DEV={self.headset_mac},PROFILE=a2dp',
+                            '-f', 'S16_LE', '-r', '48000', '-c', '2', '-t', 'raw',
+                            '--buffer-time=80000', '--period-time=40000'
+                        ],
+                        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+                        print(f"[HEADSET] Output initialized to {self.headset_mac}")
+                    except Exception as e:
+                        print(f"[HEADSET] Failed to start output: {e}")
+                        self.headset_process = None
+            
             # If ALSA output is already running, don't restart it
             if hasattr(self, '_alsa_process') and self._alsa_process:
                 if self._alsa_process.poll() is None:  # Still running
@@ -277,6 +300,7 @@ class SineRowPlayer:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             bufsize=0)
+
 
         except Exception as e:
             print(f"[ALSA] Error initializing output: {e}")
@@ -898,6 +922,24 @@ class SineRowPlayer:
                 off += n
             except BrokenPipeError:
                 break
+    
+    def _write_headset(self, data_bytes: bytes):
+        """Write stereo PCM bytes to Bluetooth headset"""
+        if not self.headset_enabled or not self.headset_process or self.headset_process.poll() is not None:
+            return
+        mv = memoryview(data_bytes)
+        total = len(mv)
+        off = 0
+        while off < total:
+            try:
+                n = self.headset_process.stdin.write(mv[off:])
+                if n is None:
+                    continue
+                off += n
+            except (BrokenPipeError, OSError):
+                # Headset disconnected or process died
+                self.headset_process = None
+                break
             
     def _write_all(self, data_bytes: bytes):
             if not hasattr(self, "_alsa_process") or self._alsa_process is None:
@@ -1067,10 +1109,12 @@ class SineRowPlayer:
                             stereo = self._bt_stereo_unfiltered
                             st_i16 = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False)
                             self._write_loopback(st_i16.tobytes())
+                            self._write_headset(st_i16.tobytes())  # Also send to BT headset
                         else:
-                            # No BT audio - send silence to loopback
+                            # No BT audio - send silence to loopback and headset
                             silence = np.zeros((frames_per_callback, 2), dtype=np.int16)
                             self._write_loopback(silence.tobytes())
+                            self._write_headset(silence.tobytes())  # Also send to BT headset
                     else:
                         print("[AUDIO] ALSA process ended")
                         break
@@ -1749,11 +1793,10 @@ class WebSocketHandler:
                         if stale_found:
                             await asyncio.sleep(5)
                     
-                    # Now proceed with normal connection logic
-                    macs = self._list_a2dp_macs()
+                    # Only phones/computers that are A2DP *sources* (capture-capable)
+                    macs = self._list_a2dp_macs()          # ensure this returns CAPTURE list
                     if not macs:
-                        await asyncio.sleep(3)
-                        continue
+                        await asyncio.sleep(3); continue
                     pick = current_mac if current_mac in macs else macs[0]
                     if pick != current_mac:
                         subprocess.run(["bluetoothctl", "trust", pick], check=False)
@@ -2015,6 +2058,16 @@ def _release_audio():
             except Exception:
                 pass
             ws_handler.player._alsa_process_lb = None
+
+        # --- Close Bluetooth headset output process (if running) ---
+        if hasattr(ws_handler.player, "headset_process") and ws_handler.player.headset_process:
+            try:
+                ws_handler.player.headset_process.stdin.close()
+                ws_handler.player.headset_process.terminate()
+                ws_handler.player.headset_process.wait(timeout=2)
+            except Exception:
+                pass
+            ws_handler.player.headset_process = None
 
     except Exception:
         pass
