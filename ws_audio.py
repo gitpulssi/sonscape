@@ -301,6 +301,11 @@ class SineRowPlayer:
             stderr=subprocess.DEVNULL,
             bufsize=0)
 
+            # Success: ALSA output (and loopback mirror) started.
+            # Without this the function returns None, so the first
+            # ensure_stream() pass logs a false "[!] Failed to initialize
+            # ALSA output" even though playback is working.
+            return True
 
         except Exception as e:
             print(f"[ALSA] Error initializing output: {e}")
