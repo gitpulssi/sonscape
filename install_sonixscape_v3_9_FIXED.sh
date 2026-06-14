@@ -237,6 +237,9 @@ sudo tee /etc/systemd/system/sonixscape-audio.service >/dev/null <<EOF
 Description=SoniXscape Audio Engine
 After=sonixscape-web.service bluealsa.service
 Requires=bluealsa.service
+# Crash-loop guard: give up after 5 restarts within 60s (see Restart= below)
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 WorkingDirectory=$SONIX_DIR
@@ -246,7 +249,10 @@ ExecStartPre=/bin/bash -c "fuser -kv /dev/snd/pcmC1D0p 2>/dev/null || true"
 ExecStartPre=/bin/bash -c "pkill -9 aplay 2>/dev/null || true"
 
 ExecStart=$SONIX_DIR/venv/bin/python3 -u ws_audio.py
-Restart=always
+# Restart only on real crashes, not on a clean "systemctl stop",
+# so development kills stay dead. Crash-loop limit set in [Unit].
+Restart=on-failure
+RestartSec=2
 User=$CURRENT_USER
 
 [Install]
@@ -339,6 +345,12 @@ info "✓ Web interface, audio engine, and BT agent enabled"
 info ""
 info "To start BT output for device 50:16:F4:1B:20:9C:"
 info "  sudo systemctl start sonixscape-output@BT_50:16:F4:1B:20:9C.service"
+info ""
+info "Developing? Do NOT 'kill' the engine — systemd respawns it. Use:"
+info "  sudo systemctl stop sonixscape-audio.service   # stays stopped"
+info "  cd $SONIX_DIR && ./venv/bin/python3 -u ws_audio.py   # run manually"
+info "  sudo systemctl start sonixscape-audio.service  # restore"
+info "See README.md for full developer notes."
 info ""
 info "Installation complete — rebooting in 10 seconds."
 sleep 10
