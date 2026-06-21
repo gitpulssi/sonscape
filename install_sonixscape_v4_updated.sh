@@ -27,7 +27,9 @@ sudo apt-get update -y
 sudo apt-get install -y python3 python3-pip python3-venv python3-flask python3-websockets python3-dbus python3-gi \
   alsa-utils git curl bluez bluez-tools build-essential autoconf automake libtool pkg-config \
   libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev libsbc-dev libopenaptx-dev \
-  libreadline-dev libportaudio2 portaudio19-dev sox
+  libreadline-dev libportaudio2 portaudio19-dev sox \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  libgstreamer1.0-0 gir1.2-gstreamer-1.0 yt-dlp
 
 info "Ensuring snd-aloop is enabled (low-latency)"
 sudo modprobe snd-aloop || true
@@ -99,6 +101,13 @@ else
   cd "$SONIX_DIR" && git pull
 fi
 sudo chown -R "$CURRENT_USER":"$CURRENT_USER" "$SONIX_DIR"
+
+info "Verifying media_engine.py is present..."
+if [[ -f "$SONIX_DIR/media_engine.py" ]]; then
+  echo "media_engine.py found"
+else
+  err "WARNING: media_engine.py not found in repository. Media playback will be disabled."
+fi
 
 info "Setting up Python virtual environment..."
 cd "$SONIX_DIR"
@@ -394,7 +403,14 @@ info "✓ Restored loopback capture fallback (app reads from Loopback,1)"
 info "✓ Fixed systemd unit escaping (\$\$ for bash variable substitution)"
 info "✓ BlueALSA auto-detects adapter (no hard-coded hci0)"
 info "✓ Template-based BT output service (sonixscape-output@.service)"
+info "✓ GStreamer media engine (local files + YouTube via yt-dlp)"
+info "✓ Media playback: phone controls via WiFi WebSocket"
 info "✓ Web interface, audio engine, and BT agent enabled"
+info ""
+info "Media Control Example (WebSocket from phone):"
+info "  {\"type\": \"media-load\", \"uri\": \"https://www.youtube.com/watch?v=...\"}"
+info "  {\"type\": \"media-play\"}"
+info "  {\"type\": \"media-volume\", \"value\": 0.75}"
 info ""
 info "To start BT output for device 50:16:F4:1B:20:9C:"
 info "  sudo systemctl start sonixscape-output@BT_50:16:F4:1B:20:9C.service"

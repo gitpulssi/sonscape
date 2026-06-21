@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import sounddevice as sd, asyncio, os, errno, time, math, numpy as np
+import asyncio, os, errno, time, math, numpy as np
 import websockets, subprocess, sys, atexit, signal, json, fcntl, re
 import threading, queue
 from pathlib import Path
 from collections import deque
+
+try:
+    from media_engine import MediaEngine
+    MEDIA_ENGINE_AVAILABLE = True
+    print("[MEDIA] MediaEngine imported successfully")
+except ImportError:
+    MEDIA_ENGINE_AVAILABLE = False
+    print("[MEDIA] MediaEngine not available - media playback disabled")
 
 # Try to import scipy for optimized filtering
 try:
@@ -148,7 +156,19 @@ class SineRowPlayer:
         self.headset_process = None
         self.headset_enabled = True  # Auto-enable headset output
         self.headset_mac = HEADSET_MAC
-        
+
+        # Media engine (GStreamer-based playback)
+        self.media_ring = deque(maxlen=96000)  # ~2 second buffer at 48kHz stereo
+        self.media_ring_lock = threading.Lock()
+        self.media_engine = None
+        if MEDIA_ENGINE_AVAILABLE:
+            try:
+                self.media_engine = MediaEngine(self.media_ring, self.media_ring_lock, ws_handler)
+                print("[MEDIA] MediaEngine initialized")
+            except Exception as e:
+                print(f"[MEDIA] Failed to initialize MediaEngine: {e}")
+                self.media_engine = None
+
         # Sequence state
         self.sequence_rows = None
         self.current_row_index = 0
@@ -287,19 +307,10 @@ class SineRowPlayer:
             stderr=subprocess.DEVNULL,
             bufsize=0)
 
-            # --- Secondary 2-channel loopback for Bluetooth mirror ---
-            # Using minimal buffer sizes for lowest latency (~10ms total)
-            lb_dev = "hw:Loopback,0,0"
-            self._alsa_process_lb = subprocess.Popen([
-                'aplay', '-D', lb_dev,
-                '-f', 'S16_LE', '-r', '48000', '-c', '2', '-t', 'raw',
-                '--period-size=256',    # ~5.3ms per period
-                '--buffer-size=512'     # ~10.7ms total buffer
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            bufsize=0)
+            # --- Loopback writer DISABLED ---
+            # The bridge (bluealsa-aplay) now owns Loopback,0
+            # App reads from Loopback,1 via loopback fallback; headset gets direct _write_headset()
+            self._alsa_process_lb = None
 
             # Success: ALSA output (and loopback mirror) started.
             # Without this the function returns None, so the first
@@ -532,15 +543,24 @@ class SineRowPlayer:
             # Mix therapy + BT
             music_gain = float(self.bt_gain)
             therapy_mix_gain = float(getattr(self, "therapy_gain", 1.0))
+
+            # Read and mix media audio (if available)
+            media_stereo = self._read_media_from_ring(frames)
+            media_8ch = np.zeros((frames, CHANNELS), dtype=np.float32)
+            if np.any(media_stereo):
+                # Media gets full bandwidth (no 200Hz filter like BT)
+                media_8ch[:, 0::2] = media_stereo[:, 0:1]  # Spread across channels like stereo BT
+                media_8ch[:, 1::2] = media_stereo[:, 1:2]
+
             if bt_8 is not None:
-                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain
+                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain + media_8ch * self.bt_gain
             else:
-                mixed_signal = therapy_signal * therapy_mix_gain
-            
+                mixed_signal = therapy_signal * therapy_mix_gain + media_8ch * self.bt_gain
+
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
-            
-            # Store unfiltered BT audio for loopback (bypasses 200Hz filter for headphones)
-            self._bt_stereo_unfiltered = bt_stereo if self.bt_gain > 0.0 else None
+
+            # Store unfiltered media audio for headset (unfiltered full-range)
+            self._bt_stereo_unfiltered = media_stereo if np.any(media_stereo) else (bt_stereo if self.bt_gain > 0.0 else None)
             
             return mixed_signal
             
@@ -701,6 +721,32 @@ class SineRowPlayer:
         
         return output
 
+    def _read_media_from_ring(self, frames):
+        """Read frames from media engine ring buffer (stereo PCM)"""
+        output = np.zeros((frames, 2), dtype=np.float32)
+
+        if not self.media_engine or not self.media_engine.pipeline:
+            return output
+
+        try:
+            with self.media_ring_lock:
+                frames_available = len(self.media_ring)
+                frames_to_read = min(frames, frames_available)
+
+                if frames_to_read > 0:
+                    # Pop frames from the deque and convert to numpy
+                    for i in range(frames_to_read):
+                        frame_bytes = self.media_ring.popleft()
+                        # Frame is 4 bytes (2 channels × 2 bytes S16)
+                        if len(frame_bytes) >= 4:
+                            samples = np.frombuffer(frame_bytes, dtype=np.int16)
+                            output[i, :] = samples / 32767.0
+
+            return output
+        except Exception as e:
+            print(f"[MEDIA] Error reading from ring: {e}")
+            return output
+
     def _bt_to_8ch(self, bt_stereo_block):
         """200Hz lowpass then mono/stereo to 8ch - scipy or simple FIR fallback"""
         frames = bt_stereo_block.shape[0]
@@ -754,17 +800,9 @@ class SineRowPlayer:
         return out
 
     def is_device_available(self) -> bool:
-        try:
-            target = getattr(self, "output_device_hint", DEVICE_NAME)
-            for dev in sd.query_devices():
-                if target in dev["name"]:
-                    if "ICUSBAUDIO7D" in target:
-                        return True
-                    elif dev["max_output_channels"] >= CHANNELS:
-                        return True
-        except Exception as e:
-            print(f"[!] Error querying devices: {e}")
-        return False
+        # Device check removed (sounddevice dependency removed)
+        # Assume ALSA device is available; errors will surface on actual use
+        return True
 
     def _setup_bluetooth_input(self, bt_mac):
         """Setup Bluetooth input with ring buffer"""
@@ -826,13 +864,38 @@ class SineRowPlayer:
         except Exception as direct_err:
             print(f"[BT] Direct CAPTURE not available ({direct_err}); trying Loopback")
 
-        # Loopback fallback - REMOVED
-        # We now write directly to loopback in the audio callback (_pure_audio_loop)
-        # This old code would conflict with the direct writing
-        print("[BT] Loopback fallback not needed - using direct loopback writing")
-        self.bt_input = None
-        self.bt_enabled = False
-        return False
+        # Loopback fallback - read from Loopback,1 (bluealsa-aplay writes to Loopback,0)
+        loopback_device = "plughw:Loopback,1"
+        print(f"[BT] Attempting to open {loopback_device}")
+        try:
+            cap = alsaaudio.PCM(
+                type=alsaaudio.PCM_CAPTURE,
+                mode=alsaaudio.PCM_NONBLOCK,
+                device=loopback_device,
+                channels=2,
+                rate=RATE,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=BLOCK
+            )
+            self.bt_input = cap
+            self.bt_mac_current = bt_mac
+            self.bt_enabled = True
+            # Clear ring buffer
+            with self.bt_ring_lock:
+                self.bt_ring_write_pos = 0
+                self.bt_ring_read_pos = 0
+                self.bt_ring_fill = 0
+            # Start read thread
+            self.bt_read_running = True
+            self.bt_read_thread = threading.Thread(target=self._bt_read_loop, daemon=True)
+            self.bt_read_thread.start()
+            print(f"[BT] Loopback CAPTURE established for {bt_mac}")
+            return True
+        except Exception as loopback_err:
+            print(f"[BT] Loopback CAPTURE failed ({loopback_err})")
+            self.bt_input = None
+            self.bt_enabled = False
+            return False
 
     def ensure_stream(self):
         try:
@@ -1107,19 +1170,17 @@ class SineRowPlayer:
                         int16_data = (int16_data * 32767.0).astype(np.int16, copy=False)
                         self._write_all(int16_data.tobytes())
                         
-                        # --- Send ONLY unfiltered BT audio to loopback (headset should not hear therapy) ---
+                        # --- Loopback writer DISABLED (bridge owns Loopback,0 now) ---
                         # Headset feed gets ONLY Bluetooth music, bypassing 200Hz lowpass filter
                         if hasattr(self, '_bt_stereo_unfiltered') and self._bt_stereo_unfiltered is not None:
                             # Send full-bandwidth BT audio to headphones
                             stereo = self._bt_stereo_unfiltered
                             st_i16 = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False)
-                            self._write_loopback(st_i16.tobytes())
-                            self._write_headset(st_i16.tobytes())  # Also send to BT headset
+                            self._write_headset(st_i16.tobytes())  # Send to BT headset only
                         else:
-                            # No BT audio - send silence to loopback and headset
+                            # No BT audio - send silence to headset
                             silence = np.zeros((frames_per_callback, 2), dtype=np.int16)
-                            self._write_loopback(silence.tobytes())
-                            self._write_headset(silence.tobytes())  # Also send to BT headset
+                            self._write_headset(silence.tobytes())  # Send to BT headset only
                     else:
                         print("[AUDIO] ALSA process ended")
                         break
@@ -1216,6 +1277,12 @@ class WebSocketHandler:
                     data = json.loads(msg)
                 except json.JSONDecodeError:
                     await ws.send("error:badjson")
+                    continue
+
+                # Check for media commands first (use "type" field)
+                msg_type = data.get("type")
+                if msg_type and msg_type.startswith("media-"):
+                    await self.handle_media_command(msg_type, data)
                     continue
 
                 action = data.get("action")
@@ -1995,6 +2062,68 @@ class WebSocketHandler:
         if self.bt_task and not self.bt_task.done():
             self.bt_task.cancel()
         self.bt_task = asyncio.create_task(self._bt_autoconnect_loop(self.bt_mac))
+
+    async def handle_media_command(self, msg_type, data):
+        """Handle media playback commands from WebSocket"""
+        if not MEDIA_ENGINE_AVAILABLE or not self.player.media_engine:
+            await self._send_to_all_clients("error:media:engine-unavailable")
+            return
+
+        try:
+            if msg_type == "media-load":
+                uri = data.get("uri")
+                if not uri:
+                    await self._send_to_all_clients("error:media:no-uri")
+                    return
+                print(f"[WS] Media load: {uri}")
+                if self.player.media_engine.load(uri):
+                    await self._send_to_all_clients("ack:media-load")
+                else:
+                    await self._send_to_all_clients("error:media:load-failed")
+
+            elif msg_type == "media-play":
+                print("[WS] Media play")
+                if self.player.media_engine.play():
+                    await self._send_to_all_clients("ack:media-play")
+                else:
+                    await self._send_to_all_clients("error:media:play-failed")
+
+            elif msg_type == "media-pause":
+                print("[WS] Media pause")
+                if self.player.media_engine.pause():
+                    await self._send_to_all_clients("ack:media-pause")
+                else:
+                    await self._send_to_all_clients("error:media:pause-failed")
+
+            elif msg_type == "media-stop":
+                print("[WS] Media stop")
+                if self.player.media_engine.stop():
+                    await self._send_to_all_clients("ack:media-stop")
+                else:
+                    await self._send_to_all_clients("error:media:stop-failed")
+
+            elif msg_type == "media-seek":
+                seconds = data.get("seconds", 0)
+                print(f"[WS] Media seek: {seconds}s")
+                if self.player.media_engine.seek(float(seconds)):
+                    await self._send_to_all_clients("ack:media-seek")
+                else:
+                    await self._send_to_all_clients("error:media:seek-failed")
+
+            elif msg_type == "media-volume":
+                value = data.get("value", 1.0)
+                print(f"[WS] Media volume: {value}")
+                if self.player.media_engine.set_volume(float(value)):
+                    await self._send_to_all_clients("ack:media-volume")
+                else:
+                    await self._send_to_all_clients("error:media:volume-failed")
+
+            else:
+                await self._send_to_all_clients(f"error:media:unknown-command:{msg_type}")
+
+        except Exception as e:
+            print(f"[WS] Media command error: {e}")
+            await self._send_to_all_clients(f"error:media:command-error:{str(e)}")
 
     async def handle_set_mix(self, ws, data):
         try:
