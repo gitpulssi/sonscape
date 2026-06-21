@@ -27,7 +27,7 @@ sudo apt-get update -y
 sudo apt-get install -y python3 python3-pip python3-venv python3-flask python3-websockets python3-dbus python3-gi \
   alsa-utils git curl bluez bluez-tools build-essential autoconf automake libtool pkg-config \
   libasound2-dev libbluetooth-dev libdbus-1-dev libglib2.0-dev libsbc-dev libopenaptx-dev \
-  libportaudio2 portaudio19-dev sox
+  libreadline-dev libportaudio2 portaudio19-dev sox
 
 info "Ensuring snd-aloop is enabled (low-latency)"
 sudo modprobe snd-aloop || true
