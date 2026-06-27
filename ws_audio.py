@@ -746,6 +746,7 @@ class SineRowPlayer:
                 frames_to_read = min(frames, frames_available)
 
                 if frames_to_read > 0:
+                    print(f"[MEDIA-READ] Available: {frames_available}, reading {frames_to_read}")
                     # Pop frames from the deque and convert to numpy
                     for i in range(frames_to_read):
                         frame_bytes = self.media_ring.popleft()
