@@ -563,6 +563,11 @@ class SineRowPlayer:
 
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
 
+            # Diagnostic: log amplitude if media is present
+            if np.any(media_8ch):
+                max_amp = np.max(np.abs(mixed_signal))
+                print(f"[MEDIA] Output amplitude: {max_amp:.4f}")
+
             # Store unfiltered media audio for headset (unfiltered full-range)
             self._bt_stereo_unfiltered = media_stereo if np.any(media_stereo) else (bt_stereo if self.bt_gain > 0.0 else None)
 
