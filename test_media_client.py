@@ -87,7 +87,7 @@ async def test_youtube_playback(chair_ip, youtube_url, port=8081):
             # Load YouTube URL
             print(f"\n[YOUTUBE] Loading: {youtube_url}")
             await ws.send(json.dumps({"type": "media-load", "uri": youtube_url}))
-            response = await asyncio.wait_for(ws.recv(), timeout=70)
+            response = await asyncio.wait_for(ws.recv(), timeout=130)
             print(f"    Response: {response}")
 
             # Play
@@ -171,14 +171,14 @@ async def interactive_client(chair_ip, port=8081):
 
                     # Try to receive response (longer timeout for media-load)
                     try:
-                        timeout = 70 if command == "load" else 0.5
+                        timeout = 130 if command == "load" else 0.5
                         response = await asyncio.wait_for(ws.recv(), timeout=timeout)
                         print(f"  -> {response}")
                     except asyncio.TimeoutError:
                         if command != "load":
                             pass
                         else:
-                            print(f"  [!] Timeout waiting for load to complete (>70s)")
+                            print(f"  [!] Timeout waiting for load to complete (>130s)")
 
                 except KeyboardInterrupt:
                     break
