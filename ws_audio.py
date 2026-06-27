@@ -559,9 +559,16 @@ class SineRowPlayer:
 
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
 
+            # Debug: show amplitude of mixed output going to DAC
+            max_mixed_amp = np.max(np.abs(mixed_signal))
+            if max_mixed_amp > 0.0:
+                # Count non-zero channels
+                nonzero_ch = np.count_nonzero(np.max(np.abs(mixed_signal), axis=0))
+                print(f"[DAC-OUT] max_amp={max_mixed_amp:.4f} ({nonzero_ch}/8 channels active)")
+
             # Store unfiltered media audio for headset (unfiltered full-range)
             self._bt_stereo_unfiltered = media_stereo if np.any(media_stereo) else (bt_stereo if self.bt_gain > 0.0 else None)
-            
+
             return mixed_signal
             
         except Exception as e:
@@ -741,6 +748,11 @@ class SineRowPlayer:
                         if len(frame_bytes) >= 4:
                             samples = np.frombuffer(frame_bytes, dtype=np.int16)
                             output[i, :] = samples / 32767.0
+
+                    # Debug: show amplitude of read signal
+                    max_amplitude = np.max(np.abs(output[:frames_to_read]))
+                    if max_amplitude > 0.0:
+                        print(f"[MEDIA-READ] {frames_to_read}/{frames_available} frames, max_amp={max_amplitude:.4f}")
 
             return output
         except Exception as e:
@@ -1168,7 +1180,14 @@ class SineRowPlayer:
                     if self._alsa_process.poll() is None:
                         int16_data = np.clip(mixed_signal, -1.0, 1.0)
                         int16_data = (int16_data * 32767.0).astype(np.int16, copy=False)
-                        self._write_all(int16_data.tobytes())
+                        bytes_to_write = int16_data.tobytes()
+
+                        # Debug: verify data is being sent to DAC
+                        max_sample = np.max(np.abs(int16_data))
+                        if max_sample > 0:
+                            print(f"[ALSA-WRITE] {len(bytes_to_write)} bytes, max_sample={max_sample}")
+
+                        self._write_all(bytes_to_write)
                         
                         # --- Loopback writer DISABLED (bridge owns Loopback,0 now) ---
                         # Headset feed gets ONLY Bluetooth music, bypassing 200Hz lowpass filter
