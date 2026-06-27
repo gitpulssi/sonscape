@@ -21,7 +21,7 @@ async def test_media_playback(chair_ip, port=8081):
 
             # Test 1: Load local MP3 file
             print("\n[TEST 1] Loading local file...")
-            await ws.send(json.dumps({"type": "media-load", "uri": "/home/sonix/music/test.mp3"}))
+            await ws.send(json.dumps({"type": "media-load", "uri": "/opt/sonixscape/test.mp3"}))
             response = await asyncio.wait_for(ws.recv(), timeout=2)
             print(f"    Response: {response}")
 
