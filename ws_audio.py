@@ -161,6 +161,7 @@ class SineRowPlayer:
         self.media_ring = deque(maxlen=96000)  # ~2 second buffer at 48kHz stereo
         self.media_ring_lock = threading.Lock()
         self.media_engine = None
+        self.media_gain = 1.0  # Volume control for media (0.0 to 1.0)
         if MEDIA_ENGINE_AVAILABLE:
             try:
                 self.media_engine = MediaEngine(self.media_ring, self.media_ring_lock, ws_handler)
@@ -552,10 +553,13 @@ class SineRowPlayer:
                 media_8ch[:, 0::2] = media_stereo[:, 0:1]  # Spread across channels like stereo BT
                 media_8ch[:, 1::2] = media_stereo[:, 1:2]
 
+            # Apply media volume gain
+            media_gain = float(getattr(self, "media_gain", 1.0))
+
             if bt_8 is not None:
-                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain + media_8ch * self.bt_gain
+                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain + media_8ch * media_gain * self.bt_gain
             else:
-                mixed_signal = therapy_signal * therapy_mix_gain + media_8ch * self.bt_gain
+                mixed_signal = therapy_signal * therapy_mix_gain + media_8ch * media_gain * self.bt_gain
 
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
 
@@ -2132,6 +2136,8 @@ class WebSocketHandler:
             elif msg_type == "media-volume":
                 value = data.get("value", 1.0)
                 print(f"[WS] Media volume: {value}")
+                # Apply volume to both media engine and mixing gain
+                self.player.media_gain = float(value)
                 if self.player.media_engine.set_volume(float(value)):
                     await self._send_to_all_clients("ack:media-volume")
                 else:
