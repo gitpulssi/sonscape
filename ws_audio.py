@@ -161,7 +161,7 @@ class SineRowPlayer:
         self.media_ring = deque(maxlen=96000)  # ~2 second buffer at 48kHz stereo
         self.media_ring_lock = threading.Lock()
         self.media_engine = None
-        self.media_gain = 1.0  # Volume control for media (0.0 to 1.0)
+        self.media_gain = 2.0  # Volume control for media (amplify to compensate for low source amplitude)
         if MEDIA_ENGINE_AVAILABLE:
             try:
                 self.media_engine = MediaEngine(self.media_ring, self.media_ring_lock, ws_handler)
@@ -557,9 +557,9 @@ class SineRowPlayer:
             media_gain = float(getattr(self, "media_gain", 1.0))
 
             if bt_8 is not None:
-                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain + media_8ch * media_gain * self.bt_gain
+                mixed_signal = therapy_signal * therapy_mix_gain + bt_8 * music_gain + media_8ch * media_gain
             else:
-                mixed_signal = therapy_signal * therapy_mix_gain + media_8ch * media_gain * self.bt_gain
+                mixed_signal = therapy_signal * therapy_mix_gain + media_8ch * media_gain
 
             np.clip(mixed_signal, -1.0, 1.0, out=mixed_signal)
 
