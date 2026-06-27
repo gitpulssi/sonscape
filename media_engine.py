@@ -100,7 +100,7 @@ class MediaEngine:
                 ['yt-dlp', '-f', 'bestaudio', '-g', url],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60
             )
             if result.returncode == 0:
                 stream_url = result.stdout.strip()
