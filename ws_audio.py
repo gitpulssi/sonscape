@@ -1031,13 +1031,23 @@ class SineRowPlayer:
             mv = memoryview(data_bytes)
             total = len(mv)
             off = 0
+            bytes_written = 0
             while off < total:
                 if self._alsa_process.stdin.closed:
+                    print(f"[ALSA] stdin closed after {bytes_written} bytes")
                     break
-                n = self._alsa_process.stdin.write(mv[off:])
-                if n is None:
-                    continue
-                off += n
+                try:
+                    n = self._alsa_process.stdin.write(mv[off:])
+                    if n is None:
+                        continue
+                    off += n
+                    bytes_written += n
+                except (BrokenPipeError, OSError) as e:
+                    print(f"[ALSA] Write error after {bytes_written} bytes: {e}")
+                    break
+
+            if bytes_written < total:
+                print(f"[ALSA] Partial write: {bytes_written}/{total} bytes")
 
     def stop(self):
         print("[STOP] Stopping therapy playback (BT audio continues)")
