@@ -550,6 +550,7 @@ class SineRowPlayer:
             media_8ch = np.zeros((frames, CHANNELS), dtype=np.float32)
             if np.any(media_stereo):
                 # Media gets full bandwidth (no 200Hz filter like BT)
+                print(f"[MEDIA-HZ] Media extracted: {np.max(np.abs(media_stereo)):.4f} amplitude, {np.count_nonzero(media_stereo)} non-zero samples")
                 media_8ch[:, 0::2] = media_stereo[:, 0:1]  # Spread across channels like stereo BT
                 media_8ch[:, 1::2] = media_stereo[:, 1:2]
 
@@ -570,6 +571,8 @@ class SineRowPlayer:
 
             # Store unfiltered media audio for headset (unfiltered full-range)
             self._bt_stereo_unfiltered = media_stereo if np.any(media_stereo) else (bt_stereo if self.bt_gain > 0.0 else None)
+            if self._bt_stereo_unfiltered is not None:
+                print(f"[MEDIA-HZ] To headset: {np.max(np.abs(self._bt_stereo_unfiltered)):.4f} amplitude")
 
             return mixed_signal
             
