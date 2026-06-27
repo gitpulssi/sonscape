@@ -154,7 +154,7 @@ class MediaEngine:
                 with self.lock:
                     num_frames = len(data) // 4
                     self.buffer.extend([data[i*4:(i+1)*4] for i in range(num_frames)])
-                    print(f"[MEDIA] Wrote {num_frames} frames to ring buffer")
+                    print(f"[MEDIA] Wrote {num_frames} frames to ring buffer, ring now has {len(self.buffer)} frames")
 
             return Gst.FlowReturn.OK
 
