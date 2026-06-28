@@ -284,17 +284,13 @@ class SineRowPlayer:
                             '--buffer-time=80000', '--period-time=40000'
                         ],
                         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
-                        print(f"[HEADSET] Output initialized to {self.headset_mac}, process PID={self.headset_process.pid}")
                     except Exception as e:
                         print(f"[HEADSET] Failed to start output: {e}")
                         self.headset_process = None
-                else:
-                    print(f"[HEADSET] Headset process already running, PID={self.headset_process.pid}")
             
             # If ALSA output is already running, don't restart it
             if hasattr(self, '_alsa_process') and self._alsa_process:
                 if self._alsa_process.poll() is None:  # Still running
-                    print(f"[ALSA] Output already active, reusing existing process")
                     return True
 
             # --- Main 8-channel playback (chair DAC) ---
@@ -1009,13 +1005,10 @@ class SineRowPlayer:
     def _write_headset(self, data_bytes: bytes):
         """Write stereo PCM bytes to Bluetooth headset"""
         if not self.headset_enabled:
-            print(f"[HEADSET-DEBUG] headset_enabled={self.headset_enabled}")
             return
         if not self.headset_process:
-            print(f"[HEADSET-DEBUG] headset_process is None")
             return
         if self.headset_process.poll() is not None:
-            print(f"[HEADSET-DEBUG] headset_process terminated with code {self.headset_process.poll()}")
             return
         mv = memoryview(data_bytes)
         total = len(mv)
@@ -1030,11 +1023,8 @@ class SineRowPlayer:
                 off += n
             except (BrokenPipeError, OSError):
                 # Headset disconnected or process died
-                print(f"[HEADSET-DEBUG] Write error - process died after {writes_done} writes")
                 self.headset_process = None
                 break
-        if writes_done > 0:
-            print(f"[HEADSET-DEBUG] Wrote {total} bytes in {writes_done} write ops")
             
     def _write_all(self, data_bytes: bytes):
             if not hasattr(self, "_alsa_process") or self._alsa_process is None:
@@ -1208,14 +1198,12 @@ class SineRowPlayer:
                             stereo = self._bt_stereo_unfiltered
                             st_i16 = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype(np.int16, copy=False)
                             headset_bytes = st_i16.tobytes()
-                            print(f"[AUDIO] Sending {len(headset_bytes)} bytes of media to headset, amplitude={np.max(np.abs(stereo)):.4f}")
                             self._write_headset(headset_bytes)  # Send to BT headset only
                         else:
                             # No BT audio - send silence to headset
                             silence = np.zeros((frames_per_callback, 2), dtype=np.int16)
                             self._write_headset(silence.tobytes())  # Send to BT headset only
                     else:
-                        print("[AUDIO] ALSA process ended")
                         break
                 
                 # Precise timing to maintain consistent sample rate
