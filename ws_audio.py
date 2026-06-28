@@ -541,7 +541,7 @@ class SineRowPlayer:
 
             # Mix therapy + BT
             music_gain = float(self.bt_gain)
-            therapy_mix_gain = float(getattr(self, "therapy_gain", 1.0))
+            therapy_mix_gain = float(getattr(self, "therapy_gain", 2.0))
 
             # Read and mix media audio (if available)
             media_stereo = self._read_media_from_ring(frames)
