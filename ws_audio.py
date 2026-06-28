@@ -1181,6 +1181,9 @@ class SineRowPlayer:
                         int16_data = np.clip(mixed_signal, -1.0, 1.0)
                         int16_data = (int16_data * 32767.0).astype(np.int16, copy=False)
                         bytes_to_write = int16_data.tobytes()
+                        max_val = np.max(np.abs(mixed_signal))
+                        if max_val > 0.01:
+                            print(f"[AUDIO-DAC] Writing {len(bytes_to_write)} bytes, max amplitude={max_val:.4f}")
                         self._write_all(bytes_to_write)
                         
                         # --- Loopback writer DISABLED (bridge owns Loopback,0 now) ---
