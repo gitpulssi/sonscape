@@ -2089,7 +2089,7 @@ class WebSocketHandler:
                     await self._send_to_all_clients("error:media:no-uri")
                     return
                 print(f"[WS] Media load: {uri}")
-                if self.player.media_engine.load(uri):
+                if await self.player.media_engine.load(uri):
                     self.player.media_gain = 2.0  # Reset to default gain on load
                     await self._send_to_all_clients("ack:media-load")
                 else:

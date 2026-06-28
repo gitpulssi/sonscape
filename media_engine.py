@@ -13,7 +13,9 @@ import threading
 import subprocess
 import json
 import time
+import asyncio
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 Gst.init(None)
 
@@ -31,6 +33,7 @@ class MediaEngine:
         self.buffer = ring_buffer
         self.lock = ring_lock
         self.ws_handler = ws_handler
+        self.executor = ThreadPoolExecutor(max_workers=1)
 
         self.pipeline = None
         self.appsink = None
@@ -58,8 +61,8 @@ class MediaEngine:
         finally:
             print("[MEDIA] GLib main loop stopped")
 
-    def load(self, uri: str) -> bool:
-        """Load a local file or YouTube URL."""
+    async def load(self, uri: str) -> bool:
+        """Load a local file or YouTube URL (async to prevent blocking on yt-dlp)."""
         try:
             self.state = "loading"
             self.uri = uri
@@ -71,7 +74,8 @@ class MediaEngine:
                 uri = f"file://{uri}"
 
             if 'youtube.com' in uri or 'youtu.be' in uri:
-                uri = self._resolve_youtube(uri)
+                loop = asyncio.get_event_loop()
+                uri = await loop.run_in_executor(self.executor, self._resolve_youtube, uri)
                 if not uri:
                     self.state = "error"
                     self._send_status()
